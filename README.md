@@ -22,7 +22,14 @@ title: Scenes        # optional
 columns: 4           # tiles per row
 square: false        # square tiles
 fill_empty: false    # pad the last row with empty tiles so every row is full
+show_state: false    # show "Active" / "Off" under the name (Aktiveret / Fra on Danish HA)
+state_on: Active     # optional custom texts
+state_off: Off
+icon_mode: state     # static | state | scene_color | scene_color_always
 ```
+
+A scene counts as *active* when every included lamp currently matches it (on/off, brightness and colour).
+It is re-evaluated on every state change.
 
 - The first scene ("Scene 1", all lamps in the master list) is created automatically.
   More scenes are made with **New Duplicate** in the editor.
@@ -31,7 +38,7 @@ fill_empty: false    # pad the last row with empty tiles so every row is full
   click a scene to open its editor, drag a scene to change position, press **Done** when finished.
 - The editor side panel: edit the name (pencil), switch lamps in/out, see the state/colour that will be saved,
   **Re-capture**, **New Duplicate**, **Delete**, **Save changes**.
-- Hue rooms/zones and light groups get the multi-lamp icon. The last remaining scene cannot be deleted.
+- In the editor, groups are listed first, then lamps/switches alphabetically. Hue rooms/zones and light groups get the multi-lamp icon. The last remaining scene cannot be deleted.
 
 Each scene is also a `button.*` entity (usable in automations/other dashboards) and there are services
 `user_scenes.save / update / copy / delete / activate / reorder`.

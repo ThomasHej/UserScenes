@@ -49,7 +49,11 @@ class UserScenesEditor extends HTMLElement {
     this._recapture = false;
     this._editName = false;
     const orphans = scene.entities.filter((e) => !allowed.includes(e));
-    this._rows = [...allowed, ...orphans];
+    this._rows = [...allowed, ...orphans].sort(
+      (a, b) =>
+        Number(isGroup(hass, b)) - Number(isGroup(hass, a)) ||
+        friendly(hass, a).localeCompare(friendly(hass, b), undefined, { numeric: true, sensitivity: "base" })
+    );
     this._allowed = allowed;
     this._many = (card._data?.scenes.length || 0) > 1;
 
@@ -290,11 +294,11 @@ class UserScenesCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { title: "", columns: 4, square: false, fill_empty: false };
+    return { title: "", columns: 4, square: false, fill_empty: false, show_state: false, icon_mode: "state" };
   }
 
   setConfig(config) {
-    this._config = { columns: 4, square: false, fill_empty: false, ...config };
+    this._config = { columns: 4, square: false, fill_empty: false, show_state: false, icon_mode: "state", ...config };
     this._sig = null;
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._render();
@@ -434,14 +438,65 @@ class UserScenesCard extends HTMLElement {
     }
   }
 
-  // Highlight scenes whose saved on/off states currently match reality
+  // Does reality currently match the scene (on/off, brightness and colour of every included lamp)?
+  _sceneActive(scene) {
+    const states = this._hass.states;
+    return Object.entries(scene.states).every(([eid, v]) => {
+      const st = states[eid];
+      if (!st || st.state !== v.state) return false;
+      if (v.state !== "on") return true;
+      const b = st.attributes.brightness;
+      if (v.brightness != null && b != null && Math.abs(Math.round((b / 255) * 100) - v.brightness) > 3) return false;
+      const c = st.attributes.rgb_color;
+      if (v.rgb && c && Math.hypot(c[0] - v.rgb[0], c[1] - v.rgb[1], c[2] - v.rgb[2]) > 30) return false;
+      return true;
+    });
+  }
+
+  // Brightness-weighted average colour of the lamps that are on in the scene
+  _sceneColor(scene) {
+    let r = 0, g = 0, b = 0, w = 0;
+    for (const v of Object.values(scene.states)) {
+      if (v.state !== "on" || !v.rgb) continue;
+      const wt = v.brightness || 1;
+      r += v.rgb[0] * wt;
+      g += v.rgb[1] * wt;
+      b += v.rgb[2] * wt;
+      w += wt;
+    }
+    return w ? `rgb(${Math.round(r / w)},${Math.round(g / w)},${Math.round(b / w)})` : null;
+  }
+
+  // Re-evaluated on every state change in HA: active class, state text and icon colour
   _updateActive() {
-    if (!this._data || !this.shadowRoot) return;
+    if (!this._data || !this.shadowRoot || !this._hass) return;
+    const c = this._config;
+    const da = (this._hass.language || "").startsWith("da");
+    const onText = c.state_on || (da ? "Aktiveret" : "Active");
+    const offText = c.state_off || (da ? "Fra" : "Off");
+    const activeColor = "var(--state-light-active-color, #ffc107)";
     for (const tile of this.shadowRoot.querySelectorAll(".tile[data-id]")) {
       const scene = this._scene(tile.dataset.id);
-      const active =
-        scene && Object.entries(scene.states).every(([eid, v]) => this._hass.states[eid]?.state === v.state);
-      tile.classList.toggle("active", !!active);
+      if (!scene) continue;
+      const active = this._sceneActive(scene);
+      tile.classList.toggle("active", active);
+      const st = tile.querySelector(".st");
+      if (st) st.textContent = active ? onText : offText;
+      const sc = this._sceneColor(scene);
+      let color = "";
+      switch (c.icon_mode) {
+        case "static":
+          break;
+        case "scene_color":
+          color = active ? sc || activeColor : "";
+          break;
+        case "scene_color_always":
+          color = sc || (active ? activeColor : "");
+          break;
+        default: // "state"
+          color = active ? activeColor : "";
+      }
+      tile.querySelector("ha-icon").style.color = color;
     }
   }
 
@@ -457,7 +512,7 @@ class UserScenesCard extends HTMLElement {
       const tiles = d.scenes
         .map(
           (s) => `<div class="tile ${reorder ? "wiggle" : ""}" tabindex="0" data-id="${s.id}">
-            <ha-icon icon="mdi:lightbulb-group"></ha-icon><span>${esc(s.name)}</span></div>`
+            <ha-icon icon="mdi:lightbulb-group"></ha-icon><span>${esc(s.name)}</span>${c.show_state ? `<span class="st"></span>` : ""}</div>`
         )
         .join("");
       const cols = Math.max(1, Number(c.columns) || 4);
@@ -481,7 +536,7 @@ class UserScenesCard extends HTMLElement {
         ${c.square ? ".tile { aspect-ratio: 1 / 1; }" : ""}
         .tile > ha-icon { --mdc-icon-size: 40px; color: var(--state-icon-color, var(--secondary-text-color)); pointer-events: none; }
         .tile span { font-size: 1.05em; overflow-wrap: anywhere; pointer-events: none; }
-        .tile.active > ha-icon { color: var(--state-light-active-color, #ffc107); }
+        .tile span.st { font-size: .85em; color: var(--secondary-text-color); margin-top: -4px; }
         .tile.pressed { transform: scale(.95); }
         .tile.wiggle { cursor: grab; touch-action: none; animation: wiggle .28s ease-in-out infinite alternate; }
         .tile.wiggle:nth-child(2n) { animation-delay: -.14s; }
@@ -543,7 +598,13 @@ class UserScenesCardEditor extends HTMLElement {
 
   _render() {
     if (!this._form) {
-      const labels = { title: "Title (optional)", columns: "Columns", square: "Square tiles", fill_empty: "Fill with empty rectangles" };
+      const labels = { title: "Title (optional)", columns: "Columns", square: "Square tiles",
+        fill_empty: "Fill with empty rectangles",
+        show_state: "Show state (Active / Off)",
+        state_on: "Text when active (optional)",
+        state_off: "Text when not active (optional)",
+        icon_mode: "Icon behaviour",
+      };
       this._form = document.createElement("ha-form");
       this._form.computeLabel = (s) => labels[s.name] || s.name;
       this._form.schema = [
@@ -551,6 +612,23 @@ class UserScenesCardEditor extends HTMLElement {
         { name: "columns", selector: { number: { min: 1, max: 10, mode: "box" } } },
         { name: "square", selector: { boolean: {} } },
         { name: "fill_empty", selector: { boolean: {} } },
+        { name: "show_state", selector: { boolean: {} } },
+        { name: "state_on", selector: { text: {} } },
+        { name: "state_off", selector: { text: {} } },
+        {
+          name: "icon_mode",
+          selector: {
+            select: {
+              mode: "dropdown",
+              options: [
+                { value: "static", label: "Static (never changes)" },
+                { value: "state", label: "Yellow when active" },
+                { value: "scene_color", label: "Scene colour when active" },
+                { value: "scene_color_always", label: "Scene colour always" },
+              ],
+            },
+          },
+        },
       ];
       this._form.addEventListener("value-changed", (e) => {
         this._config = e.detail.value;
@@ -559,7 +637,7 @@ class UserScenesCardEditor extends HTMLElement {
       this.appendChild(this._form);
     }
     this._form.hass = this._hass;
-    this._form.data = { columns: 4, square: false, fill_empty: false, ...this._config };
+    this._form.data = { columns: 4, square: false, fill_empty: false, show_state: false, icon_mode: "state", ...this._config };
   }
 }
 
