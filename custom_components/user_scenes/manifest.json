@@ -1,0 +1,13 @@
+{
+  "domain": "user_scenes",
+  "name": "User Scenes",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["http", "frontend", "websocket_api"],
+  "documentation": "https://github.com/CHANGE_ME/UserScenes",
+  "issue_tracker": "https://github.com/CHANGE_ME/UserScenes/issues",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "single_config_entry": true,
+  "version": "0.1.0"
+}

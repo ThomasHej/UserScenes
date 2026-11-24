@@ -1,0 +1,61 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "User Scenes",
+        "description": "Choose the master list of lamps and relays that users may include in scenes.",
+        "data": { "entities": "Lamps / relays" }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Master lamp list",
+        "description": "Lamps and relays that users may include in scenes. Existing scenes keep their saved lamps.",
+        "data": { "entities": "Lamps / relays" }
+      }
+    }
+  },
+  "services": {
+    "save": {
+      "name": "Save scene",
+      "description": "Save the current state of the chosen lamps as a new scene.",
+      "fields": {
+        "name": { "name": "Name", "description": "Scene description shown on the button." },
+        "entities": { "name": "Lamps", "description": "Lamps to include (must be in the master list)." }
+      }
+    },
+    "update": {
+      "name": "Edit scene",
+      "description": "Rename a scene and/or change which lamps it includes.",
+      "fields": {
+        "scene_id": { "name": "Scene ID", "description": "ID of the scene (attribute scene_id on its button)." },
+        "name": { "name": "Name", "description": "New name." },
+        "entities": { "name": "Lamps", "description": "New set of lamps. Newly added lamps are captured from their current state." },
+        "recapture": { "name": "Recapture", "description": "Also re-capture the current state of lamps already in the scene." }
+      }
+    },
+    "copy": {
+      "name": "Copy scene",
+      "description": "Duplicate a scene.",
+      "fields": {
+        "scene_id": { "name": "Scene ID", "description": "Scene to copy." },
+        "name": { "name": "Name", "description": "Name of the copy (default: original name + (copy))." }
+      }
+    },
+    "delete": {
+      "name": "Delete scene",
+      "description": "Delete a scene.",
+      "fields": { "scene_id": { "name": "Scene ID", "description": "Scene to delete." } }
+    },
+    "activate": {
+      "name": "Activate scene",
+      "description": "Restore the saved state of a scene.",
+      "fields": {
+        "scene_id": { "name": "Scene ID", "description": "Scene to activate." },
+        "transition": { "name": "Transition", "description": "Transition time in seconds for lights." }
+      }
+    }
+  }
+}

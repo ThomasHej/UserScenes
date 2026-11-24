@@ -1,0 +1,63 @@
+save:
+  fields:
+    name:
+      required: true
+      selector:
+        text:
+    entities:
+      required: true
+      selector:
+        entity:
+          multiple: true
+          filter:
+            domain: [light, switch]
+
+update:
+  fields:
+    scene_id:
+      required: true
+      selector:
+        text:
+    name:
+      selector:
+        text:
+    entities:
+      selector:
+        entity:
+          multiple: true
+          filter:
+            domain: [light, switch]
+    recapture:
+      default: false
+      selector:
+        boolean:
+
+copy:
+  fields:
+    scene_id:
+      required: true
+      selector:
+        text:
+    name:
+      selector:
+        text:
+
+delete:
+  fields:
+    scene_id:
+      required: true
+      selector:
+        text:
+
+activate:
+  fields:
+    scene_id:
+      required: true
+      selector:
+        text:
+    transition:
+      selector:
+        number:
+          min: 0
+          max: 300
+          unit_of_measurement: s
