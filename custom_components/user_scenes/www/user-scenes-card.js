@@ -104,7 +104,7 @@ class UserScenesEditor extends HTMLElement {
         #info { padding: 4px 20px 8px; color: var(--secondary-text-color); font-size: .9em; line-height: 1.4; }
         #info p { margin: 6px 0; }
         #list { flex: 1; overflow-y: auto; border-top: 1px solid var(--divider-color); }
-        .row { display: flex; align-items: center; gap: 16px; padding: 10px 20px; border-bottom: 1px solid var(--divider-color); }
+        .row { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 10px 20px; border-bottom: 1px solid var(--divider-color); }
         .row ha-icon { --mdc-icon-size: 28px; color: var(--disabled-text-color); flex: none; cursor: pointer;
                        -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
         .row ha-icon.on { color: var(--state-light-active-color, #ffc107); }
@@ -113,6 +113,11 @@ class UserScenesEditor extends HTMLElement {
         .row .sub { font-size: .8em; color: var(--secondary-text-color); }
         .chip { font: inherit; font-size: .75em; padding: 4px 10px; border-radius: 12px; flex: none; cursor: pointer;
                 border: 1px solid var(--divider-color); background: var(--secondary-background-color); color: var(--primary-text-color); }
+        .row .nm { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; cursor: pointer; }
+        .mem { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 2px 44px; margin-top: -6px; }
+        .pill { display: inline-flex; align-items: center; gap: 6px; font-size: .78em; padding: 3px 9px; border-radius: 12px;
+                background: var(--secondary-background-color); color: var(--primary-text-color); }
+        .pill .dot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--divider-color); flex: none; }
         .row.off .nm div:first-child { color: var(--secondary-text-color); }
         .row.off ha-icon { opacity: .45; }
         #foot { padding: 12px 16px; border-top: 1px solid var(--divider-color); display: flex; flex-wrap: wrap; gap: 8px; }
@@ -133,7 +138,7 @@ class UserScenesEditor extends HTMLElement {
              The icons show the state that will be saved when you press <b>Save</b>.</p>
           <p>Use <b>Re-capture</b> to update all included lamps to their current state.
              Lamps that are not selected are never touched.</p>
-          <p>Long-press a lamp icon to open that lamp's advanced dialog (colour, brightness, ...)
+          <p>Long-press a lamp icon or name to open that lamp's advanced dialog (colour, brightness, ...)
              so you can adjust it while building the scene.</p>
         </div>
         <div id="list"></div>
@@ -153,9 +158,11 @@ class UserScenesEditor extends HTMLElement {
 
     // long-press on a lamp icon -> HA's more-info dialog for that entity
     root.addEventListener("pointerdown", (e) => {
-      const icon = e.composedPath().find((n) => n.tagName === "HA-ICON" && n.parentElement?.classList.contains("row"));
-      if (!icon) return;
-      const eid = icon.parentElement.dataset.eid;
+      const hit = e
+        .composedPath()
+        .find((n) => n.parentElement?.classList?.contains("row") && (n.tagName === "HA-ICON" || n.classList?.contains("nm")));
+      if (!hit) return;
+      const eid = hit.parentElement.dataset.eid;
       clearTimeout(this._lpTimer);
       this._lpTimer = setTimeout(() => {
         this._card.dispatchEvent(
@@ -167,7 +174,8 @@ class UserScenesEditor extends HTMLElement {
       root.addEventListener(ev, () => clearTimeout(this._lpTimer));
     }
     root.addEventListener("contextmenu", (e) => {
-      if (e.composedPath().some((n) => n.tagName === "HA-ICON")) e.preventDefault();
+      if (e.composedPath().some((n) => n.parentElement?.classList?.contains("row") && (n.tagName === "HA-ICON" || n.classList?.contains("nm"))))
+        e.preventDefault();
     });
 
     this._renderHead();
@@ -177,7 +185,7 @@ class UserScenesEditor extends HTMLElement {
           <ha-icon></ha-icon>
           <div class="nm"><div>${esc(friendly(hass, eid))}${this._allowed.includes(eid) ? "" : " (not in master list)"}</div><div class="sub"></div></div>
           ${(this._groups[eid] || []).length >= 2 ? `<button class="chip" data-action="mode" data-eid="${esc(eid)}"></button>` : ""}
-          <ha-switch></ha-switch></div>`
+          <ha-switch></ha-switch>${(this._groups[eid] || []).length >= 2 ? `<div class="mem"></div>` : ""}</div>`
       )
       .join("");
     this._renderFoot();
@@ -239,16 +247,38 @@ class UserScenesEditor extends HTMLElement {
       }
       const members = this._groups[eid] || [];
       const chip = row.querySelector(".chip");
+      const mem = row.querySelector(".mem");
+      let indiv = false;
       if (chip) {
         chip.textContent = MODE_LABEL[this._modes[eid]];
         chip.title = "Auto: saved as the group if all lamps are identical, otherwise each lamp individually. Individual: always per lamp. As group: always the group.";
         chip.style.display = eff ? "" : "none";
         if (eff && v.state !== "unavailable") {
-          const indiv =
+          indiv =
             eff.from === "saved"
               ? !!eff.members
               : this._modes[eid] === "individual" || (this._modes[eid] === "auto" && !uniform(this._hass, members));
           sub += indiv ? ` · ${members.length} lamps individually` : " · as group";
+        }
+      }
+      if (mem) {
+        if (eff && indiv) {
+          const list =
+            eff.from === "saved" && eff.members
+              ? Object.entries(eff.members).map(([id, mv]) => ({ id, ...mv }))
+              : members.map((id) => ({ id, ...this._current(id) }));
+          mem.innerHTML = list
+            .map((x) => {
+              const on = x.state === "on";
+              const col = on ? (x.rgb ? `rgb(${x.rgb.join(",")})` : "var(--state-light-active-color, #ffc107)") : "var(--disabled-text-color)";
+              const txt = on ? (x.brightness != null ? ` ${x.brightness}%` : "") : x.state === "off" ? " off" : " n/a";
+              return `<span class="pill"><span class="dot" style="background:${col}"></span>${esc(friendly(this._hass, x.id))}${txt}</span>`;
+            })
+            .join("");
+          mem.style.display = "";
+        } else {
+          mem.innerHTML = "";
+          mem.style.display = "none";
         }
       }
       row.querySelector(".sub").textContent = sub;

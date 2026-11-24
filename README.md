@@ -42,9 +42,9 @@ It is re-evaluated on every state change.
     lamps to include and save.
 - **Groups (Hue rooms/zones, light groups):** each group row has a mode button.
   *Auto* saves the group as one if all its lamps are set identically, otherwise each lamp individually;
-  *Individual* always saves per lamp; *As group* always saves the group. The row shows which will happen.
+  *Individual* always saves per lamp; *As group* always saves the group. The row shows which will happen and, when expanded, lists each lamp with its colour/brightness.
   The members are resolved from the group's attributes (`entity_id`, or the Hue `lights` names).
-- In the editor, long-press a lamp icon to open that lamp's advanced (more-info) dialog.
+- In the editor, long-press a lamp icon or name to open that lamp's advanced (more-info) dialog.
 - In the editor, groups are listed first, then lamps/switches alphabetically. Hue rooms/zones and light groups get the multi-lamp icon. The last remaining scene cannot be deleted.
 
 Each scene is also a `button.*` entity (usable in automations/other dashboards) and there are services
