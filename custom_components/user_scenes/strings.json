@@ -4,7 +4,9 @@
       "user": {
         "title": "User Scenes",
         "description": "Choose the master list of lamps and relays that users may include in scenes.",
-        "data": { "entities": "Lamps / relays" }
+        "data": {
+          "entities": "Lamps / relays"
+        }
       }
     }
   },
@@ -13,15 +15,36 @@
       "init": {
         "title": "Master lamp list",
         "description": "Lamps and relays that users may include in scenes. Existing scenes keep their saved lamps.",
-        "data": { "entities": "Lamps / relays" }
+        "data": {
+          "entities": "Lamps / relays"
+        }
       }
     }
   },
   "services": {
-    "save": { "name": "Save scene", "description": "Save the current state of the chosen lamps as a new scene." },
-    "update": { "name": "Edit scene", "description": "Rename a scene and/or change which lamps it includes." },
-    "copy": { "name": "Copy scene", "description": "Duplicate a scene." },
-    "delete": { "name": "Delete scene", "description": "Delete a scene." },
-    "activate": { "name": "Activate scene", "description": "Restore the saved state of a scene." }
+    "save": {
+      "name": "Save scene",
+      "description": "Save the current state of the chosen lamps as a new scene."
+    },
+    "update": {
+      "name": "Edit scene",
+      "description": "Rename a scene and/or change which lamps it includes."
+    },
+    "copy": {
+      "name": "Copy scene",
+      "description": "Duplicate a scene."
+    },
+    "delete": {
+      "name": "Delete scene",
+      "description": "Delete a scene."
+    },
+    "activate": {
+      "name": "Activate scene",
+      "description": "Restore the saved state of a scene."
+    },
+    "reorder": {
+      "name": "Reorder scenes",
+      "description": "Set the order of the scene buttons."
+    }
   }
 }

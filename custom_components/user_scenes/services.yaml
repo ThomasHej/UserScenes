@@ -61,3 +61,10 @@ activate:
           min: 0
           max: 300
           unit_of_measurement: s
+
+reorder:
+  fields:
+    scene_ids:
+      required: true
+      selector:
+        object:

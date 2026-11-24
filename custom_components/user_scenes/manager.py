@@ -38,6 +38,7 @@ class SceneManager:
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         # scene_id -> {"name": str, "entities": {entity_id: {"state", "attributes"}}}
         self.scenes: dict[str, dict[str, Any]] = {}
+        self._default_lock = asyncio.Lock()
 
     async def async_load(self) -> None:
         data = await self._store.async_load()
@@ -74,7 +75,11 @@ class SceneManager:
             key = _COLOR_ATTR.get(state.attributes.get("color_mode"))
             if key and (value := state.attributes.get(key)) is not None:
                 attrs[key] = list(value) if isinstance(value, (tuple, list)) else value
-        return {"state": state.state, "attributes": attrs}
+        snap: dict[str, Any] = {"state": state.state, "attributes": attrs}
+        # Display colour only (used by the UI icons), never used for restore
+        if state.state == STATE_ON and (rgb := state.attributes.get("rgb_color")):
+            snap["rgb"] = list(rgb)
+        return snap
 
     def _snapshot_many(self, entity_ids: list[str]) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -144,8 +149,26 @@ class SceneManager:
 
     async def async_delete(self, scene_id: str) -> None:
         self._get(scene_id)
+        if len(self.scenes) <= 1:
+            raise ServiceValidationError("The last scene cannot be deleted")
         del self.scenes[scene_id]
         await self._async_commit()
+
+    async def async_reorder(self, scene_ids: list[str]) -> None:
+        ordered = [i for i in scene_ids if i in self.scenes]
+        ordered += [i for i in self.scenes if i not in ordered]
+        self.scenes = {i: self.scenes[i] for i in ordered}
+        await self._async_commit()
+
+    async def async_ensure_default(self) -> None:
+        """Create the first scene (all master-list lamps) if none exist yet."""
+        async with self._default_lock:
+            if self.scenes or not self.allowed:
+                return
+            try:
+                await self.async_save("Scene 1", list(self.allowed))
+            except ServiceValidationError:
+                _LOGGER.debug("Default scene not created yet: lamps unavailable")
 
     async def async_activate(self, scene_id: str, transition: float | None = None) -> None:
         scene = self._get(scene_id)
@@ -194,5 +217,6 @@ def summarize(entities: dict[str, Any]) -> dict[str, Any]:
         out[entity_id] = {
             "state": snap["state"],
             "brightness": round(brightness / 255 * 100) if brightness is not None else None,
+            "rgb": snap.get("rgb"),
         }
     return out

@@ -1,7 +1,7 @@
 """Constants for User Scenes."""
 
 DOMAIN = "user_scenes"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 CONF_ENTITIES = "entities"
 
@@ -19,3 +19,4 @@ SERVICE_UPDATE = "update"
 SERVICE_COPY = "copy"
 SERVICE_DELETE = "delete"
 SERVICE_ACTIVATE = "activate"
+SERVICE_REORDER = "reorder"

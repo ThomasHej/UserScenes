@@ -1,17 +1,26 @@
 /* User Scenes card
  * - Tile grid of scenes (configurable columns / square tiles), auto-filled from saved scenes.
- * - Tap = activate scene, long-press = open editor side panel.
+ * - Tap = activate scene, long-press = open editor side panel (not while editing the dashboard).
+ * - Editor "Move" puts the grid in rearrange mode (wiggling tiles with arrows).
  */
 const US_DOMAIN = "user_scenes";
 const LONG_PRESS_MS = 500;
+const EDIT_TAGS = ["HUI-CARD-EDIT-MODE", "HUI-CARD-OPTIONS", "HUI-CARD-PREVIEW", "HUI-DIALOG-EDIT-CARD", "HUI-DIALOG-SUGGEST-CARD"];
 
 const esc = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-const lampIcon = (eid, on) =>
-  eid.startsWith("switch.")
-    ? on ? "mdi:toggle-switch" : "mdi:toggle-switch-off-outline"
-    : on ? "mdi:lightbulb" : "mdi:lightbulb-outline";
+// Hue rooms/zones (and generic light groups) get the "multi lamp" icon
+const isGroup = (hass, eid) => {
+  const a = hass.states[eid]?.attributes || {};
+  return a.is_hue_group === true || a.hue_type !== undefined || Array.isArray(a.entity_id);
+};
+
+const lampIcon = (hass, eid, on) => {
+  if (eid.startsWith("switch.")) return on ? "mdi:toggle-switch" : "mdi:toggle-switch-off-outline";
+  if (isGroup(hass, eid)) return on ? "mdi:lightbulb-group" : "mdi:lightbulb-group-outline";
+  return on ? "mdi:lightbulb" : "mdi:lightbulb-outline";
+};
 
 const friendly = (hass, eid) => hass.states[eid]?.attributes.friendly_name || eid;
 
@@ -33,15 +42,16 @@ class UserScenesEditor extends HTMLElement {
   open({ hass, card, allowed, scene }) {
     this._hass = hass;
     this._card = card;
-    this._id = scene?.id || null;
-    this._name = scene?.name || "";
-    this._saved = scene?.states || {};
-    this._selected = new Set(scene?.entities || []);
+    this._id = scene.id;
+    this._name = scene.name;
+    this._saved = scene.states || {};
+    this._selected = new Set(scene.entities);
     this._recapture = false;
-    this._editName = !scene;
-    const orphans = (scene?.entities || []).filter((e) => !allowed.includes(e));
+    this._editName = false;
+    const orphans = scene.entities.filter((e) => !allowed.includes(e));
     this._rows = [...allowed, ...orphans];
     this._allowed = allowed;
+    this._many = (card._data?.scenes.length || 0) > 1;
 
     const root = this.attachShadow({ mode: "open" });
     root.innerHTML = `
@@ -139,9 +149,13 @@ class UserScenesEditor extends HTMLElement {
 
   _current(eid) {
     const s = this._hass.states[eid];
-    if (!s || ["unavailable", "unknown"].includes(s.state)) return { state: "unavailable", brightness: null };
+    if (!s || ["unavailable", "unknown"].includes(s.state)) return { state: "unavailable", brightness: null, rgb: null };
     const b = s.attributes.brightness;
-    return { state: s.state, brightness: b != null ? Math.round((b / 255) * 100) : null };
+    return {
+      state: s.state,
+      brightness: b != null ? Math.round((b / 255) * 100) : null,
+      rgb: s.state === "on" ? s.attributes.rgb_color || null : null,
+    };
   }
 
   _refreshRows() {
@@ -152,8 +166,16 @@ class UserScenesEditor extends HTMLElement {
       const v = eff || this._current(eid);
       const on = v.state === "on";
       const icon = row.querySelector("ha-icon");
-      icon.setAttribute("icon", lampIcon(eid, on));
+      icon.setAttribute("icon", lampIcon(this._hass, eid, on));
       icon.classList.toggle("on", on && !!eff);
+      // Realistic colour (like the Hue app): actual colour + brightness of what will be saved
+      if (on && eff && v.rgb) {
+        icon.style.color = `rgb(${v.rgb.join(",")})`;
+        icon.style.opacity = String(0.5 + (0.5 * (v.brightness ?? 100)) / 100);
+      } else {
+        icon.style.color = "";
+        icon.style.opacity = "";
+      }
       row.classList.toggle("off", !eff);
       let sub = "Not included";
       if (eff) {
@@ -171,7 +193,7 @@ class UserScenesEditor extends HTMLElement {
     const title = this._editName
       ? `<input id="name" type="text" placeholder="Scene description" value="${esc(this._name)}">
          <button class="ib" data-action="name-done" title="OK"><ha-icon icon="mdi:check"></ha-icon></button>`
-      : `<h2>${esc(this._name || "New scene")}</h2>
+      : `<h2>${esc(this._name)}</h2>
          <button class="ib" data-action="name-edit" title="Edit name"><ha-icon icon="mdi:pencil"></ha-icon></button>`;
     root.getElementById("head").innerHTML =
       `<button class="ib" data-action="close" title="Close"><ha-icon icon="mdi:arrow-left"></ha-icon></button>${title}`;
@@ -183,11 +205,11 @@ class UserScenesEditor extends HTMLElement {
   }
 
   _renderFoot() {
-    const existing = !!this._id;
     this.shadowRoot.getElementById("foot").innerHTML = `
-      <button class="b primary" data-action="save">${existing ? "Save changes" : "Save scene"}</button>
-      ${existing ? `<button class="b ${this._recapture ? "on" : ""}" data-action="recapture"><ha-icon icon="mdi:camera-retake"></ha-icon>Re-capture</button>` : ""}
-      ${existing ? `<button class="b" data-action="copy"><ha-icon icon="mdi:content-copy"></ha-icon>Copy</button>
+      <button class="b primary" data-action="save">Save changes</button>
+      <button class="b ${this._recapture ? "on" : ""}" data-action="recapture"><ha-icon icon="mdi:camera-retake"></ha-icon>Re-capture</button>
+      <button class="b" data-action="copy"><ha-icon icon="mdi:content-copy"></ha-icon>New Duplicate</button>
+      ${this._many ? `<button class="b" data-action="move"><ha-icon icon="mdi:arrow-left-right"></ha-icon>Move</button>
       <button class="b danger" data-action="delete"><ha-icon icon="mdi:delete"></ha-icon>Delete</button>` : ""}
       <button class="b" data-action="close">Cancel</button>
       ${this._recapture ? `<div class="hint">All selected lamps will be saved with their current state.</div>` : ""}`;
@@ -236,8 +258,7 @@ class UserScenesEditor extends HTMLElement {
             return alert("Please enter a description for the scene.");
           }
           if (!entities.length) return alert("Select at least one lamp.");
-          if (this._id) await usCall(this._hass, "update", { scene_id: this._id, name, entities, recapture: this._recapture });
-          else await usCall(this._hass, "save", { name, entities });
+          await usCall(this._hass, "update", { scene_id: this._id, name, entities, recapture: this._recapture });
           await this._card._load();
           this.close();
           break;
@@ -249,6 +270,10 @@ class UserScenesEditor extends HTMLElement {
           this._card._edit(r.scene_id);
           break;
         }
+        case "move":
+          this.close();
+          this._card._startReorder();
+          break;
         case "delete":
           if (!confirm(`Delete scene "${this._name}"?`)) return;
           await usCall(this._hass, "delete", { scene_id: this._id });
@@ -270,18 +295,26 @@ class UserScenesCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { title: "", columns: 4, square: false, show_add: true };
+    return { title: "", columns: 4, square: false };
   }
 
   setConfig(config) {
-    this._config = { columns: 4, square: false, show_add: true, ...config };
+    this._config = { columns: 4, square: false, ...config };
     this._sig = null;
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._render();
   }
 
+  set preview(v) {
+    this._preview = v;
+  }
+
+  set editMode(v) {
+    this._editModeProp = v;
+  }
+
   getCardSize() {
-    return Math.max(2, Math.ceil(((this._data?.scenes.length || 0) + 1) / this._config.columns) * 2);
+    return Math.max(2, Math.ceil((this._data?.scenes.length || 1) / this._config.columns) * 2);
   }
 
   set hass(hass) {
@@ -299,6 +332,17 @@ class UserScenesCard extends HTMLElement {
     if (this._editor?.isConnected) this._editor.setHass(hass);
   }
 
+  // True while the dashboard / this card is being edited (long-press must not open the editor then)
+  _inEditMode() {
+    if (this._preview || this._editModeProp) return true;
+    let n = this;
+    while (n) {
+      if (n.tagName && EDIT_TAGS.includes(n.tagName)) return true;
+      n = n.parentNode || n.host;
+    }
+    return false;
+  }
+
   async _load() {
     try {
       this._data = await this._hass.callWS({ type: "user_scenes/list" });
@@ -314,9 +358,9 @@ class UserScenesCard extends HTMLElement {
   }
 
   _edit(id) {
-    if (!this._data) return;
+    if (!this._data || !this._scene(id)) return;
     const ed = document.createElement("user-scenes-editor");
-    ed.open({ hass: this._hass, card: this, allowed: this._data.allowed, scene: id ? this._scene(id) : null });
+    ed.open({ hass: this._hass, card: this, allowed: this._data.allowed, scene: this._scene(id) });
     document.body.appendChild(ed);
     this._editor = ed;
   }
@@ -329,6 +373,31 @@ class UserScenesCard extends HTMLElement {
     } catch (err) {
       alert(err.message || String(err));
     }
+  }
+
+  // ---- rearrange mode
+  _startReorder() {
+    this._order = this._data.scenes.map((s) => s.id);
+    this._reorder = true;
+    this._render();
+  }
+
+  _move(id, delta) {
+    const i = this._order.indexOf(id);
+    const j = i + delta;
+    if (i < 0 || j < 0 || j >= this._order.length) return;
+    [this._order[i], this._order[j]] = [this._order[j], this._order[i]];
+    this._render();
+  }
+
+  async _finishReorder() {
+    try {
+      await usCall(this._hass, "reorder", { scene_ids: this._order });
+    } catch (err) {
+      alert(err.message || String(err));
+    }
+    this._reorder = false;
+    await this._load();
   }
 
   // Highlight scenes whose saved on/off states currently match reality
@@ -345,47 +414,76 @@ class UserScenesCard extends HTMLElement {
   _render() {
     const c = this._config;
     const d = this._data;
+    const reorder = this._reorder && d;
     let body;
     if (this._error) body = `<p class="msg err">${esc(this._error)}</p>`;
     else if (!d) body = `<p class="msg">Loading…</p>`;
     else {
-      const tiles = d.scenes
+      let scenes = d.scenes;
+      if (reorder) {
+        const byId = Object.fromEntries(scenes.map((s) => [s.id, s]));
+        scenes = [...this._order.filter((i) => byId[i]).map((i) => byId[i]), ...scenes.filter((s) => !this._order.includes(s.id))];
+        this._order = scenes.map((s) => s.id);
+      }
+      const last = scenes.length - 1;
+      const tiles = scenes
         .map(
-          (s) => `<div class="tile" tabindex="0" data-id="${s.id}">
-            <ha-icon icon="mdi:lightbulb-group"></ha-icon><span>${esc(s.name)}</span></div>`
+          (s, i) => `<div class="tile ${reorder ? "wiggle" : ""}" tabindex="0" data-id="${s.id}">
+            <ha-icon icon="mdi:lightbulb-group"></ha-icon><span>${esc(s.name)}</span>
+            ${reorder ? `<button class="arrow l" data-move="-1" ${i === 0 ? "disabled" : ""}><ha-icon icon="mdi:chevron-left"></ha-icon></button>
+            <button class="arrow r" data-move="1" ${i === last ? "disabled" : ""}><ha-icon icon="mdi:chevron-right"></ha-icon></button>` : ""}
+          </div>`
         )
         .join("");
-      const add = c.show_add
-        ? `<div class="tile add" tabindex="0" data-add="1"><ha-icon icon="mdi:plus"></ha-icon><span>New scene</span></div>`
+      const bar = reorder
+        ? `<div class="bar"><span>Use the arrows to move the scenes.</span><button data-done="1">Done</button></div>`
         : "";
-      body = `<div class="grid">${tiles}${add}</div>`;
+      body = `${bar}<div class="grid">${tiles}</div>`;
     }
     this.shadowRoot.innerHTML = `
       <style>
         .title { padding: 0 8px 8px; font-size: 1.2em; font-weight: 500; color: var(--primary-text-color); }
         .grid { display: grid; grid-template-columns: repeat(${Math.max(1, Number(c.columns) || 4)}, minmax(0, 1fr)); gap: 8px; }
-        .tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+        .tile { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
                 padding: 16px 8px; min-height: 100px; box-sizing: border-box; text-align: center; cursor: pointer;
                 border-radius: var(--ha-card-border-radius, 12px); border: 1px solid var(--divider-color);
                 background: var(--ha-card-background, var(--card-background-color, #fff)); color: var(--primary-text-color);
                 user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: manipulation;
                 transition: transform .12s, border-color .2s; }
         ${c.square ? ".tile { aspect-ratio: 1 / 1; }" : ""}
-        .tile ha-icon { --mdc-icon-size: 40px; color: var(--state-icon-color, var(--secondary-text-color)); pointer-events: none; }
+        .tile > ha-icon { --mdc-icon-size: 40px; color: var(--state-icon-color, var(--secondary-text-color)); pointer-events: none; }
         .tile span { font-size: 1.05em; overflow-wrap: anywhere; pointer-events: none; }
         .tile.active { border-color: var(--state-light-active-color, #ffc107); }
-        .tile.active ha-icon { color: var(--state-light-active-color, #ffc107); }
+        .tile.active > ha-icon { color: var(--state-light-active-color, #ffc107); }
         .tile.pressed { transform: scale(.95); }
-        .tile.add { border-style: dashed; background: transparent; color: var(--secondary-text-color); }
+        .tile.wiggle { cursor: default; animation: wiggle .28s ease-in-out infinite alternate; }
+        .tile.wiggle:nth-child(2n) { animation-delay: -.14s; }
+        @keyframes wiggle { from { transform: rotate(-1.2deg); } to { transform: rotate(1.2deg); } }
+        .arrow { position: absolute; top: 50%; transform: translateY(-50%); width: 30px; height: 30px; padding: 0; display: grid; place-items: center;
+                 border-radius: 50%; border: none; cursor: pointer; background: var(--primary-color); color: var(--text-primary-color, #fff); }
+        .arrow ha-icon { --mdc-icon-size: 22px; }
+        .arrow.l { left: 4px; } .arrow.r { right: 4px; }
+        .arrow[disabled] { opacity: .25; cursor: default; }
+        .bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px 10px; color: var(--secondary-text-color); }
+        .bar button { font: inherit; cursor: pointer; padding: 8px 18px; border: none; border-radius: 8px;
+                      background: var(--primary-color); color: var(--text-primary-color, #fff); }
         .msg { padding: 8px; } .err { color: var(--error-color); }
       </style>
       <div>${c.title ? `<div class="title">${esc(c.title)}</div>` : ""}${body}</div>`;
 
-    for (const t of this.shadowRoot.querySelectorAll(".tile")) {
+    const root = this.shadowRoot;
+    if (reorder) {
+      root.querySelector("[data-done]")?.addEventListener("click", () => this._finishReorder());
+      for (const a of root.querySelectorAll(".arrow")) {
+        a.addEventListener("click", () => this._move(a.closest(".tile").dataset.id, Number(a.dataset.move)));
+      }
+      return;
+    }
+    for (const t of root.querySelectorAll(".tile")) {
       t.addEventListener("pointerdown", () => {
         this._lp = false;
         clearTimeout(this._timer);
-        if (t.dataset.add) return;
+        if (this._inEditMode()) return;
         this._timer = setTimeout(() => {
           this._lp = true;
           this._edit(t.dataset.id);
@@ -399,7 +497,7 @@ class UserScenesCard extends HTMLElement {
           this._lp = false;
           return;
         }
-        t.dataset.add ? this._edit(null) : this._activate(t);
+        this._activate(t);
       });
       t.addEventListener("keydown", (e) => e.key === "Enter" && t.click());
       t.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -423,14 +521,13 @@ class UserScenesCardEditor extends HTMLElement {
 
   _render() {
     if (!this._form) {
-      const labels = { title: "Title (optional)", columns: "Columns", square: "Square tiles", show_add: "Show “New scene” tile" };
+      const labels = { title: "Title (optional)", columns: "Columns", square: "Square tiles" };
       this._form = document.createElement("ha-form");
       this._form.computeLabel = (s) => labels[s.name] || s.name;
       this._form.schema = [
         { name: "title", selector: { text: {} } },
         { name: "columns", selector: { number: { min: 1, max: 10, mode: "box" } } },
         { name: "square", selector: { boolean: {} } },
-        { name: "show_add", selector: { boolean: {} } },
       ];
       this._form.addEventListener("value-changed", (e) => {
         this._config = e.detail.value;
@@ -439,7 +536,7 @@ class UserScenesCardEditor extends HTMLElement {
       this.appendChild(this._form);
     }
     this._form.hass = this._hass;
-    this._form.data = { columns: 4, square: false, show_add: true, ...this._config };
+    this._form.data = { columns: 4, square: false, ...this._config };
   }
 }
 

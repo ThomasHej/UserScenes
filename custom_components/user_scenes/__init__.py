@@ -9,7 +9,7 @@ import voluptuous as vol
 from homeassistant.components import frontend, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, callback
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
@@ -21,6 +21,7 @@ from .const import (
     SERVICE_ACTIVATE,
     SERVICE_COPY,
     SERVICE_DELETE,
+    SERVICE_REORDER,
     SERVICE_SAVE,
     SERVICE_UPDATE,
     VERSION,
@@ -76,6 +77,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def delete(call: ServiceCall) -> None:
         await _manager(hass).async_delete(call.data["scene_id"])
 
+    async def reorder(call: ServiceCall) -> None:
+        await _manager(hass).async_reorder(call.data["scene_ids"])
+
     async def activate(call: ServiceCall) -> None:
         await _manager(hass).async_activate(
             call.data["scene_id"], call.data.get("transition")
@@ -114,6 +118,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.services.async_register(DOMAIN, SERVICE_DELETE, delete, vol.Schema(sid))
     hass.services.async_register(
         DOMAIN,
+        SERVICE_REORDER,
+        reorder,
+        vol.Schema({vol.Required("scene_ids"): [cv.string]}),
+    )
+    hass.services.async_register(
+        DOMAIN,
         SERVICE_ACTIVATE,
         activate,
         vol.Schema({**sid, vol.Optional("transition"): vol.Coerce(float)}),
@@ -122,14 +132,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 @websocket_api.websocket_command({vol.Required("type"): "user_scenes/list"})
-@callback
-def ws_list(hass: HomeAssistant, connection, msg) -> None:
+@websocket_api.async_response
+async def ws_list(hass: HomeAssistant, connection, msg) -> None:
     """Return the master lamp list and all scenes to the card."""
     try:
         manager = _manager(hass)
     except ServiceValidationError as err:
         connection.send_error(msg["id"], "not_loaded", str(err))
         return
+    await manager.async_ensure_default()
     connection.send_result(
         msg["id"], {"allowed": manager.allowed, "scenes": manager.as_list()}
     )
