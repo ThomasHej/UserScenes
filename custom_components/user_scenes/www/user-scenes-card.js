@@ -81,7 +81,8 @@ class UserScenesEditor extends HTMLElement {
         #info p { margin: 6px 0; }
         #list { flex: 1; overflow-y: auto; border-top: 1px solid var(--divider-color); }
         .row { display: flex; align-items: center; gap: 16px; padding: 10px 20px; border-bottom: 1px solid var(--divider-color); }
-        .row ha-icon { --mdc-icon-size: 28px; color: var(--disabled-text-color); flex: none; }
+        .row ha-icon { --mdc-icon-size: 28px; color: var(--disabled-text-color); flex: none; cursor: pointer;
+                       -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
         .row ha-icon.on { color: var(--state-light-active-color, #ffc107); }
         .row .nm { flex: 1; min-width: 0; }
         .row .nm div:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -106,6 +107,8 @@ class UserScenesEditor extends HTMLElement {
              The icons show the state that will be saved when you press <b>Save</b>.</p>
           <p>Use <b>Re-capture</b> to update all included lamps to their current state.
              Lamps that are not selected are never touched.</p>
+          <p>Long-press a lamp icon to open that lamp's advanced dialog (colour, brightness, ...)
+             so you can adjust it while building the scene.</p>
         </div>
         <div id="list"></div>
         <div id="foot"></div>
@@ -121,6 +124,25 @@ class UserScenesEditor extends HTMLElement {
     });
     this._key = (e) => e.key === "Escape" && this.close();
     document.addEventListener("keydown", this._key);
+
+    // long-press on a lamp icon -> HA's more-info dialog for that entity
+    root.addEventListener("pointerdown", (e) => {
+      const icon = e.composedPath().find((n) => n.tagName === "HA-ICON" && n.parentElement?.classList.contains("row"));
+      if (!icon) return;
+      const eid = icon.parentElement.dataset.eid;
+      clearTimeout(this._lpTimer);
+      this._lpTimer = setTimeout(() => {
+        this._card.dispatchEvent(
+          new CustomEvent("hass-more-info", { bubbles: true, composed: true, detail: { entityId: eid } })
+        );
+      }, 500);
+    });
+    for (const ev of ["pointerup", "pointercancel", "pointerleave"]) {
+      root.addEventListener(ev, () => clearTimeout(this._lpTimer));
+    }
+    root.addEventListener("contextmenu", (e) => {
+      if (e.composedPath().some((n) => n.tagName === "HA-ICON")) e.preventDefault();
+    });
 
     this._renderHead();
     root.getElementById("list").innerHTML = this._rows

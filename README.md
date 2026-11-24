@@ -40,6 +40,7 @@ It is re-evaluated on every state change.
     press **Done** when finished.
   - **Create new Scene** - opens the editor with a blank scene (all lamps off); enter a name, switch on the
     lamps to include and save.
+- In the editor, long-press a lamp icon to open that lamp's advanced (more-info) dialog.
 - In the editor, groups are listed first, then lamps/switches alphabetically. Hue rooms/zones and light groups get the multi-lamp icon. The last remaining scene cannot be deleted.
 
 Each scene is also a `button.*` entity (usable in automations/other dashboards) and there are services
