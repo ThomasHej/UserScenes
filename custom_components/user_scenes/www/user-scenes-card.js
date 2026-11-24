@@ -1,7 +1,7 @@
 /* User Scenes card
  * - Tile grid of scenes (configurable columns / square tiles), auto-filled from saved scenes.
- * - Tap = activate scene, long-press = open editor side panel (not while editing the dashboard).
- * - Editor "Move" puts the grid in rearrange mode (wiggling tiles with arrows).
+ * - Tap = activate scene, long-press = rumble mode (not while editing the dashboard):
+ *   click a tile to edit it, drag a tile to change its position.
  */
 const US_DOMAIN = "user_scenes";
 const LONG_PRESS_MS = 500;
@@ -209,8 +209,7 @@ class UserScenesEditor extends HTMLElement {
       <button class="b primary" data-action="save">Save changes</button>
       <button class="b ${this._recapture ? "on" : ""}" data-action="recapture"><ha-icon icon="mdi:camera-retake"></ha-icon>Re-capture</button>
       <button class="b" data-action="copy"><ha-icon icon="mdi:content-copy"></ha-icon>New Duplicate</button>
-      ${this._many ? `<button class="b" data-action="move"><ha-icon icon="mdi:arrow-left-right"></ha-icon>Move</button>
-      <button class="b danger" data-action="delete"><ha-icon icon="mdi:delete"></ha-icon>Delete</button>` : ""}
+      ${this._many ? `<button class="b danger" data-action="delete"><ha-icon icon="mdi:delete"></ha-icon>Delete</button>` : ""}
       <button class="b" data-action="close">Cancel</button>
       ${this._recapture ? `<div class="hint">All selected lamps will be saved with their current state.</div>` : ""}`;
   }
@@ -270,10 +269,6 @@ class UserScenesEditor extends HTMLElement {
           this._card._edit(r.scene_id);
           break;
         }
-        case "move":
-          this.close();
-          this._card._startReorder();
-          break;
         case "delete":
           if (!confirm(`Delete scene "${this._name}"?`)) return;
           await usCall(this._hass, "delete", { scene_id: this._id });
@@ -295,11 +290,11 @@ class UserScenesCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { title: "", columns: 4, square: false };
+    return { title: "", columns: 4, square: false, fill_empty: false };
   }
 
   setConfig(config) {
-    this._config = { columns: 4, square: false, ...config };
+    this._config = { columns: 4, square: false, fill_empty: false, ...config };
     this._sig = null;
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._render();
@@ -375,29 +370,68 @@ class UserScenesCard extends HTMLElement {
     }
   }
 
-  // ---- rearrange mode
+  // ---- rumble mode: click = edit, drag = change position
   _startReorder() {
-    this._order = this._data.scenes.map((s) => s.id);
     this._reorder = true;
     this._render();
   }
 
-  _move(id, delta) {
-    const i = this._order.indexOf(id);
-    const j = i + delta;
-    if (i < 0 || j < 0 || j >= this._order.length) return;
-    [this._order[i], this._order[j]] = [this._order[j], this._order[i]];
+  _exitReorder() {
+    this._reorder = false;
     this._render();
   }
 
-  async _finishReorder() {
-    try {
-      await usCall(this._hass, "reorder", { scene_ids: this._order });
-    } catch (err) {
-      alert(err.message || String(err));
+  _bindReorder(root) {
+    const grid = root.querySelector(".grid");
+    for (const t of root.querySelectorAll(".tile[data-id]")) {
+      t.addEventListener("pointerdown", (e) => {
+        if (e.button) return;
+        const r = t.getBoundingClientRect();
+        this._drag = { tile: t, id: t.dataset.id, sx: e.clientX, sy: e.clientY, gx: e.clientX - r.left, gy: e.clientY - r.top, moved: false };
+        const move = (ev) => {
+          const d = this._drag;
+          if (!d) return;
+          if (!d.moved) {
+            if (Math.hypot(ev.clientX - d.sx, ev.clientY - d.sy) < 8) return;
+            d.moved = true;
+            d.tile.classList.add("dragging");
+          }
+          d.tile.style.transform = "none";
+          const n = d.tile.getBoundingClientRect();
+          d.tile.style.transform = `translate(${ev.clientX - d.gx - n.left}px, ${ev.clientY - d.gy - n.top}px)`;
+          for (const o of grid.querySelectorAll(".tile[data-id]")) {
+            if (o === d.tile) continue;
+            const r2 = o.getBoundingClientRect();
+            if (ev.clientX >= r2.left && ev.clientX <= r2.right && ev.clientY >= r2.top && ev.clientY <= r2.bottom) {
+              const kids = [...grid.children];
+              grid.insertBefore(d.tile, kids.indexOf(o) < kids.indexOf(d.tile) ? o : o.nextSibling);
+              break;
+            }
+          }
+        };
+        const end = (ev) => {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", end);
+          window.removeEventListener("pointercancel", end);
+          const d = this._drag;
+          this._drag = null;
+          if (!d) return;
+          d.tile.style.transform = "";
+          d.tile.classList.remove("dragging");
+          if (!d.moved) {
+            if (ev.type === "pointerup") this._edit(d.id);
+            return;
+          }
+          const order = [...grid.querySelectorAll(".tile[data-id]")].map((x) => x.dataset.id);
+          const byId = Object.fromEntries(this._data.scenes.map((x) => [x.id, x]));
+          this._data.scenes = order.map((id) => byId[id]);
+          usCall(this._hass, "reorder", { scene_ids: order }).catch((err) => alert(err.message || String(err)));
+        };
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", end);
+        window.addEventListener("pointercancel", end);
+      });
     }
-    this._reorder = false;
-    await this._load();
   }
 
   // Highlight scenes whose saved on/off states currently match reality
@@ -412,6 +446,7 @@ class UserScenesCard extends HTMLElement {
   }
 
   _render() {
+    if (this._drag?.moved) return;
     const c = this._config;
     const d = this._data;
     const reorder = this._reorder && d;
@@ -419,26 +454,19 @@ class UserScenesCard extends HTMLElement {
     if (this._error) body = `<p class="msg err">${esc(this._error)}</p>`;
     else if (!d) body = `<p class="msg">Loading…</p>`;
     else {
-      let scenes = d.scenes;
-      if (reorder) {
-        const byId = Object.fromEntries(scenes.map((s) => [s.id, s]));
-        scenes = [...this._order.filter((i) => byId[i]).map((i) => byId[i]), ...scenes.filter((s) => !this._order.includes(s.id))];
-        this._order = scenes.map((s) => s.id);
-      }
-      const last = scenes.length - 1;
-      const tiles = scenes
+      const tiles = d.scenes
         .map(
-          (s, i) => `<div class="tile ${reorder ? "wiggle" : ""}" tabindex="0" data-id="${s.id}">
-            <ha-icon icon="mdi:lightbulb-group"></ha-icon><span>${esc(s.name)}</span>
-            ${reorder ? `<button class="arrow l" data-move="-1" ${i === 0 ? "disabled" : ""}><ha-icon icon="mdi:chevron-left"></ha-icon></button>
-            <button class="arrow r" data-move="1" ${i === last ? "disabled" : ""}><ha-icon icon="mdi:chevron-right"></ha-icon></button>` : ""}
-          </div>`
+          (s) => `<div class="tile ${reorder ? "wiggle" : ""}" tabindex="0" data-id="${s.id}">
+            <ha-icon icon="mdi:lightbulb-group"></ha-icon><span>${esc(s.name)}</span></div>`
         )
         .join("");
+      const cols = Math.max(1, Number(c.columns) || 4);
+      const pad = c.fill_empty ? (cols - (d.scenes.length % cols)) % cols : 0;
+      const empties = `<div class="tile empty" aria-hidden="true">&nbsp;</div>`.repeat(pad);
       const bar = reorder
-        ? `<div class="bar"><span>Use the arrows to move the scenes.</span><button data-done="1">Done</button></div>`
+        ? `<div class="bar"><span>Click a scene to edit it. Click and drag to change position.</span><button data-done="1">Done</button></div>`
         : "";
-      body = `${bar}<div class="grid">${tiles}</div>`;
+      body = `${bar}<div class="grid">${tiles}${empties}</div>`;
     }
     this.shadowRoot.innerHTML = `
       <style>
@@ -453,17 +481,13 @@ class UserScenesCard extends HTMLElement {
         ${c.square ? ".tile { aspect-ratio: 1 / 1; }" : ""}
         .tile > ha-icon { --mdc-icon-size: 40px; color: var(--state-icon-color, var(--secondary-text-color)); pointer-events: none; }
         .tile span { font-size: 1.05em; overflow-wrap: anywhere; pointer-events: none; }
-        .tile.active { border-color: var(--state-light-active-color, #ffc107); }
         .tile.active > ha-icon { color: var(--state-light-active-color, #ffc107); }
         .tile.pressed { transform: scale(.95); }
-        .tile.wiggle { cursor: default; animation: wiggle .28s ease-in-out infinite alternate; }
+        .tile.wiggle { cursor: grab; touch-action: none; animation: wiggle .28s ease-in-out infinite alternate; }
         .tile.wiggle:nth-child(2n) { animation-delay: -.14s; }
+        .tile.dragging { animation: none; cursor: grabbing; z-index: 5; opacity: .92; box-shadow: 0 6px 18px rgba(0,0,0,.35); transition: none; }
+        .tile.empty { pointer-events: none; }
         @keyframes wiggle { from { transform: rotate(-1.2deg); } to { transform: rotate(1.2deg); } }
-        .arrow { position: absolute; top: 50%; transform: translateY(-50%); width: 30px; height: 30px; padding: 0; display: grid; place-items: center;
-                 border-radius: 50%; border: none; cursor: pointer; background: var(--primary-color); color: var(--text-primary-color, #fff); }
-        .arrow ha-icon { --mdc-icon-size: 22px; }
-        .arrow.l { left: 4px; } .arrow.r { right: 4px; }
-        .arrow[disabled] { opacity: .25; cursor: default; }
         .bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px 10px; color: var(--secondary-text-color); }
         .bar button { font: inherit; cursor: pointer; padding: 8px 18px; border: none; border-radius: 8px;
                       background: var(--primary-color); color: var(--text-primary-color, #fff); }
@@ -473,20 +497,18 @@ class UserScenesCard extends HTMLElement {
 
     const root = this.shadowRoot;
     if (reorder) {
-      root.querySelector("[data-done]")?.addEventListener("click", () => this._finishReorder());
-      for (const a of root.querySelectorAll(".arrow")) {
-        a.addEventListener("click", () => this._move(a.closest(".tile").dataset.id, Number(a.dataset.move)));
-      }
+      root.querySelector("[data-done]")?.addEventListener("click", () => this._exitReorder());
+      this._bindReorder(root);
       return;
     }
-    for (const t of root.querySelectorAll(".tile")) {
+    for (const t of root.querySelectorAll(".tile[data-id]")) {
       t.addEventListener("pointerdown", () => {
         this._lp = false;
         clearTimeout(this._timer);
         if (this._inEditMode()) return;
         this._timer = setTimeout(() => {
           this._lp = true;
-          this._edit(t.dataset.id);
+          this._startReorder();
         }, LONG_PRESS_MS);
       });
       for (const ev of ["pointerup", "pointerleave", "pointercancel"]) {
@@ -521,13 +543,14 @@ class UserScenesCardEditor extends HTMLElement {
 
   _render() {
     if (!this._form) {
-      const labels = { title: "Title (optional)", columns: "Columns", square: "Square tiles" };
+      const labels = { title: "Title (optional)", columns: "Columns", square: "Square tiles", fill_empty: "Fill with empty rectangles" };
       this._form = document.createElement("ha-form");
       this._form.computeLabel = (s) => labels[s.name] || s.name;
       this._form.schema = [
         { name: "title", selector: { text: {} } },
         { name: "columns", selector: { number: { min: 1, max: 10, mode: "box" } } },
         { name: "square", selector: { boolean: {} } },
+        { name: "fill_empty", selector: { boolean: {} } },
       ];
       this._form.addEventListener("value-changed", (e) => {
         this._config = e.detail.value;
@@ -536,7 +559,7 @@ class UserScenesCardEditor extends HTMLElement {
       this.appendChild(this._form);
     }
     this._form.hass = this._hass;
-    this._form.data = { columns: 4, square: false, ...this._config };
+    this._form.data = { columns: 4, square: false, fill_empty: false, ...this._config };
   }
 }
 
