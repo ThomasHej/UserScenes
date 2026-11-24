@@ -66,7 +66,8 @@ class UserScenesEditor extends HTMLElement {
         .panel { position: absolute; top: 0; right: 0; bottom: 0; width: min(440px, 100vw);
                  display: flex; flex-direction: column; box-sizing: border-box;
                  background: var(--card-background-color, #fff); color: var(--primary-text-color);
-                 box-shadow: -4px 0 16px rgba(0,0,0,.3); animation: slide .2s ease-out; }
+                 box-shadow: -4px 0 16px rgba(0,0,0,.3); animation: slide .2s ease-out;
+                 padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
         @keyframes slide { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
         #head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 4px; }
         #head h2 { flex: 1; margin: 0; font-size: 1.4em; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

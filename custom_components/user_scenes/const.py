@@ -1,7 +1,7 @@
 """Constants for User Scenes."""
 
 DOMAIN = "user_scenes"
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 CONF_ENTITIES = "entities"
 
