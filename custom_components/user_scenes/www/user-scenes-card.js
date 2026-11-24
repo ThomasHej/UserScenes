@@ -22,6 +22,23 @@ const lampIcon = (hass, eid, on) => {
   return on ? "mdi:lightbulb" : "mdi:lightbulb-outline";
 };
 
+const MODE_LABEL = { auto: "Auto", individual: "Individual", group: "As group" };
+
+// Are all (available) member lamps of a group set identically? (mirrors the backend test)
+const uniform = (hass, ids) => {
+  const sts = ids.map((i) => hass.states[i]).filter((x) => x && !["unavailable", "unknown"].includes(x.state));
+  const on = sts.filter((x) => x.state === "on");
+  if (on.length && on.length !== sts.length) return false;
+  if (!on.length) return true;
+  const b = on.map((x) => x.attributes.brightness);
+  if (!b.some((v) => v == null) && Math.max(...b) - Math.min(...b) > 10) return false;
+  const c = on.map((x) => x.attributes.rgb_color);
+  if (c.every(Boolean)) {
+    for (const x of c) if (Math.hypot(x[0] - c[0][0], x[1] - c[0][1], x[2] - c[0][2]) > 20) return false;
+  }
+  return true;
+};
+
 const friendly = (hass, eid) => hass.states[eid]?.attributes.friendly_name || eid;
 
 async function usCall(hass, service, data, response = false) {
@@ -56,6 +73,13 @@ class UserScenesEditor extends HTMLElement {
     );
     this._allowed = allowed;
     this._many = (card._data?.scenes.length || 0) > 1;
+    this._groups = card._data?.groups || {}; // group entity -> member lamps
+    this._savedModes = {};
+    this._modes = {};
+    for (const eid of this._rows) {
+      this._savedModes[eid] = this._saved[eid]?.mode || "auto";
+      this._modes[eid] = this._savedModes[eid];
+    }
 
     const root = this.attachShadow({ mode: "open" });
     root.innerHTML = `
@@ -87,6 +111,8 @@ class UserScenesEditor extends HTMLElement {
         .row .nm { flex: 1; min-width: 0; }
         .row .nm div:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .row .sub { font-size: .8em; color: var(--secondary-text-color); }
+        .chip { font: inherit; font-size: .75em; padding: 4px 10px; border-radius: 12px; flex: none; cursor: pointer;
+                border: 1px solid var(--divider-color); background: var(--secondary-background-color); color: var(--primary-text-color); }
         .row.off .nm div:first-child { color: var(--secondary-text-color); }
         .row.off ha-icon { opacity: .45; }
         #foot { padding: 12px 16px; border-top: 1px solid var(--divider-color); display: flex; flex-wrap: wrap; gap: 8px; }
@@ -150,6 +176,7 @@ class UserScenesEditor extends HTMLElement {
         (eid) => `<div class="row" data-eid="${esc(eid)}">
           <ha-icon></ha-icon>
           <div class="nm"><div>${esc(friendly(hass, eid))}${this._allowed.includes(eid) ? "" : " (not in master list)"}</div><div class="sub"></div></div>
+          ${(this._groups[eid] || []).length >= 2 ? `<button class="chip" data-action="mode" data-eid="${esc(eid)}"></button>` : ""}
           <ha-switch></ha-switch></div>`
       )
       .join("");
@@ -170,7 +197,8 @@ class UserScenesEditor extends HTMLElement {
   // What will be stored for a lamp if Save is pressed now (null = not included)
   _effective(eid) {
     if (!this._selected.has(eid)) return null;
-    if (this._saved[eid] && !this._recapture) return { ...this._saved[eid], from: "saved" };
+    if (this._saved[eid] && !this._recapture && this._modes[eid] === this._savedModes[eid])
+      return { ...this._saved[eid], from: "saved" };
     return { ...this._current(eid), from: "current" };
   }
 
@@ -208,6 +236,20 @@ class UserScenesEditor extends HTMLElement {
       if (eff) {
         sub = v.state === "unavailable" ? "Unavailable – will be skipped" : on ? "On" + (v.brightness != null ? ` · ${v.brightness}%` : "") : "Off";
         if (v.state !== "unavailable") sub += eff.from === "saved" ? " — saved state" : " — current state";
+      }
+      const members = this._groups[eid] || [];
+      const chip = row.querySelector(".chip");
+      if (chip) {
+        chip.textContent = MODE_LABEL[this._modes[eid]];
+        chip.title = "Auto: saved as the group if all lamps are identical, otherwise each lamp individually. Individual: always per lamp. As group: always the group.";
+        chip.style.display = eff ? "" : "none";
+        if (eff && v.state !== "unavailable") {
+          const indiv =
+            eff.from === "saved"
+              ? !!eff.members
+              : this._modes[eid] === "individual" || (this._modes[eid] === "auto" && !uniform(this._hass, members));
+          sub += indiv ? ` · ${members.length} lamps individually` : " · as group";
+        }
       }
       row.querySelector(".sub").textContent = sub;
       const sw = row.querySelector("ha-switch");
@@ -274,6 +316,13 @@ class UserScenesEditor extends HTMLElement {
         case "name-done":
           this._nameDone();
           break;
+        case "mode": {
+          const order = ["auto", "individual", "group"];
+          const eid = btn.dataset.eid;
+          this._modes[eid] = order[(order.indexOf(this._modes[eid]) + 1) % order.length];
+          this._refreshRows();
+          break;
+        }
         case "recapture":
           this._recapture = !this._recapture;
           this._renderFoot();
@@ -288,8 +337,10 @@ class UserScenesEditor extends HTMLElement {
             return alert("Please enter a description for the scene.");
           }
           if (!entities.length) return alert("Select at least one lamp.");
-          if (this._id) await usCall(this._hass, "update", { scene_id: this._id, name, entities, recapture: this._recapture });
-          else await usCall(this._hass, "save", { name, entities });
+          const group_modes = {};
+          for (const x of entities) if ((this._groups[x] || []).length >= 2) group_modes[x] = this._modes[x];
+          if (this._id) await usCall(this._hass, "update", { scene_id: this._id, name, entities, recapture: this._recapture, group_modes });
+          else await usCall(this._hass, "save", { name, entities, group_modes });
           await this._card._load();
           this.close();
           break;
@@ -551,7 +602,8 @@ class UserScenesCard extends HTMLElement {
   // Does reality currently match the scene (on/off, brightness and colour of every included lamp)?
   _sceneActive(scene) {
     const states = this._hass.states;
-    return Object.entries(scene.states).every(([eid, v]) => {
+    const match = (eid, v) => {
+      if (v.members) return Object.entries(v.members).every(([m, mv]) => match(m, mv));
       const st = states[eid];
       if (!st || st.state !== v.state) return false;
       if (v.state !== "on") return true;
@@ -560,13 +612,14 @@ class UserScenesCard extends HTMLElement {
       const c = st.attributes.rgb_color;
       if (v.rgb && c && Math.hypot(c[0] - v.rgb[0], c[1] - v.rgb[1], c[2] - v.rgb[2]) > 30) return false;
       return true;
-    });
+    };
+    return Object.entries(scene.states).every(([eid, v]) => match(eid, v));
   }
 
   // Brightness-weighted average colour of the lamps that are on in the scene
   _sceneColor(scene) {
     let r = 0, g = 0, b = 0, w = 0;
-    for (const v of Object.values(scene.states)) {
+    for (const v of Object.values(scene.states).flatMap((x) => (x.members ? Object.values(x.members) : [x]))) {
       if (v.state !== "on" || !v.rgb) continue;
       const wt = v.brightness || 1;
       r += v.rgb[0] * wt;

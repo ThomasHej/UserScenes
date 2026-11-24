@@ -33,6 +33,10 @@
         "entities": {
           "name": "Lamps",
           "description": "Lamps to include (must be in the master list)."
+        },
+        "group_modes": {
+          "name": "Group modes",
+          "description": "Per group entity: auto (group if all lamps identical, otherwise individual), individual, or group."
         }
       }
     },
@@ -55,6 +59,10 @@
         "recapture": {
           "name": "Recapture",
           "description": "Also re-capture the current state of lamps already in the scene."
+        },
+        "group_modes": {
+          "name": "Group modes",
+          "description": "Per group entity: auto (group if all lamps identical, otherwise individual), individual, or group."
         }
       }
     },

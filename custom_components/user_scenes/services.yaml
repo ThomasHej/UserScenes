@@ -11,6 +11,9 @@ save:
           multiple: true
           filter:
             domain: [light, switch]
+    group_modes:
+      selector:
+        object:
 
 update:
   fields:
@@ -31,6 +34,9 @@ update:
       default: false
       selector:
         boolean:
+    group_modes:
+      selector:
+        object:
 
 copy:
   fields:

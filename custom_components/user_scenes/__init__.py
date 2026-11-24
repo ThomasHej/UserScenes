@@ -30,6 +30,8 @@ from .manager import SceneManager
 
 PLATFORMS = ["button"]
 
+GROUP_MODES = {cv.entity_id: vol.In(["auto", "individual", "group"])}
+
 type UserScenesConfigEntry = ConfigEntry[SceneManager]
 
 
@@ -56,7 +58,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
     async def save(call: ServiceCall) -> dict:
         scene_id = await _manager(hass).async_save(
-            call.data["name"], call.data["entities"]
+            call.data["name"], call.data["entities"], call.data.get("group_modes")
         )
         return {"scene_id": scene_id}
 
@@ -66,6 +68,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             call.data.get("name"),
             call.data.get("entities"),
             call.data["recapture"],
+            call.data.get("group_modes"),
         )
 
     async def copy_scene(call: ServiceCall) -> dict:
@@ -91,7 +94,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         SERVICE_SAVE,
         save,
         vol.Schema(
-            {vol.Required("name"): cv.string, vol.Required("entities"): cv.entity_ids}
+            {
+                vol.Required("name"): cv.string,
+                vol.Required("entities"): cv.entity_ids,
+                vol.Optional("group_modes"): GROUP_MODES,
+            }
         ),
         supports_response=SupportsResponse.OPTIONAL,
     )
@@ -105,6 +112,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 vol.Optional("name"): cv.string,
                 vol.Optional("entities"): cv.entity_ids,
                 vol.Optional("recapture", default=False): cv.boolean,
+                vol.Optional("group_modes"): GROUP_MODES,
             }
         ),
     )
@@ -141,12 +149,15 @@ async def ws_list(hass: HomeAssistant, connection, msg) -> None:
         connection.send_error(msg["id"], "not_loaded", str(err))
         return
     await manager.async_ensure_default()
+    entity_ids = set(manager.allowed) | {e for sc in manager.scenes.values() for e in sc["entities"]}
+    groups = {e: m for e in entity_ids if (m := manager.members(e))}
     connection.send_result(
         msg["id"],
         {
             "allowed": manager.allowed,
             "scenes": manager.as_list(),
             "layout": manager.layout,
+            "groups": groups,
         },
     )
 

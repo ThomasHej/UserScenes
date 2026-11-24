@@ -11,6 +11,7 @@ from uuid import uuid4
 from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 
@@ -66,7 +67,65 @@ class SceneManager:
                 f"Not in the master lamp list: {', '.join(bad)}"
             )
 
-    def _snapshot(self, entity_id: str) -> dict[str, Any] | None:
+    def members(self, entity_id: str) -> list[str]:
+        """Individual lamps behind a group entity (Hue room/zone or light group).
+
+        Returns [] when the entity is not a group or the members cannot be resolved.
+        """
+        if not entity_id.startswith("light."):
+            return []
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return []
+        attrs = state.attributes
+        ids = attrs.get("entity_id")
+        if isinstance(ids, (list, tuple)) and ids:
+            return [i for i in ids if isinstance(i, str) and i.startswith("light.") and i != entity_id]
+        names = attrs.get("lights")
+        if attrs.get("is_hue_group") and isinstance(names, (list, tuple)) and names:
+            wanted = set(names)
+            registry = er.async_get(self.hass)
+            entry = registry.async_get(entity_id)
+            platform = entry.platform if entry else "hue"
+            found: dict[str, str] = {}
+            for ent in registry.entities.values():
+                if ent.platform != platform or ent.domain != "light" or ent.entity_id == entity_id or ent.disabled_by:
+                    continue
+                st = self.hass.states.get(ent.entity_id)
+                if st is None or st.attributes.get("is_hue_group"):
+                    continue
+                name = st.attributes.get("friendly_name")
+                if name in wanted:
+                    found.setdefault(name, ent.entity_id)
+            if len(found) == len(wanted):
+                return list(found.values())
+        return []
+
+    def _uniform(self, member_ids: list[str]) -> bool:
+        """True when all (available) member lamps are set identically."""
+        states = [
+            s
+            for i in member_ids
+            if (s := self.hass.states.get(i)) is not None
+            and s.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+        ]
+        on = [s for s in states if s.state == STATE_ON]
+        if on and len(on) != len(states):
+            return False
+        if not on:
+            return True
+        brightness = [s.attributes.get("brightness") for s in on]
+        if None not in brightness and max(brightness) - min(brightness) > 10:
+            return False
+        colors = [s.attributes.get("rgb_color") for s in on]
+        if all(colors):
+            first = colors[0]
+            for c in colors:
+                if sum((x - y) ** 2 for x, y in zip(c, first)) ** 0.5 > 20:
+                    return False
+        return True
+
+    def _snapshot_single(self, entity_id: str) -> dict[str, Any] | None:
         state = self.hass.states.get(entity_id)
         if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             _LOGGER.warning("Skipping %s: unavailable, cannot capture state", entity_id)
@@ -84,10 +143,25 @@ class SceneManager:
             snap["rgb"] = list(rgb)
         return snap
 
-    def _snapshot_many(self, entity_ids: list[str]) -> dict[str, Any]:
+    def _snapshot(self, entity_id: str, mode: str = "auto") -> dict[str, Any] | None:
+        """Snapshot an entity. Groups are stored as one entity if all members are
+        identical (mode auto), or per member lamp if they differ / mode individual."""
+        snap = self._snapshot_single(entity_id)
+        if snap is None:
+            return None
+        snap["mode"] = mode
+        members = self.members(entity_id)
+        if len(members) >= 2 and mode != "group" and (mode == "individual" or not self._uniform(members)):
+            member_snaps = {m: ms for m in members if (ms := self._snapshot_single(m)) is not None}
+            if member_snaps:
+                snap["members"] = member_snaps
+        return snap
+
+    def _snapshot_many(self, entity_ids: list[str], modes: dict[str, str] | None = None) -> dict[str, Any]:
+        modes = modes or {}
         result: dict[str, Any] = {}
         for entity_id in entity_ids:
-            if (snap := self._snapshot(entity_id)) is not None:
+            if (snap := self._snapshot(entity_id, modes.get(entity_id, "auto"))) is not None:
                 result[entity_id] = snap
         if not result:
             raise ServiceValidationError("None of the selected lamps could be captured")
@@ -95,7 +169,9 @@ class SceneManager:
 
     # --------------------------------------------------------------- operations
 
-    async def async_save(self, name: str, entity_ids: list[str]) -> str:
+    async def async_save(
+        self, name: str, entity_ids: list[str], group_modes: dict[str, str] | None = None
+    ) -> str:
         name = name.strip()
         if not name:
             raise ServiceValidationError("Scene name is required")
@@ -103,7 +179,7 @@ class SceneManager:
         scene_id = uuid4().hex[:8]
         self.scenes[scene_id] = {
             "name": name,
-            "entities": self._snapshot_many(entity_ids),
+            "entities": self._snapshot_many(entity_ids, group_modes),
         }
         await self._async_commit()
         return scene_id
@@ -114,6 +190,7 @@ class SceneManager:
         name: str | None = None,
         entity_ids: list[str] | None = None,
         recapture: bool = False,
+        group_modes: dict[str, str] | None = None,
     ) -> None:
         """Rename and/or change the included lamps.
 
@@ -128,9 +205,18 @@ class SceneManager:
         if entity_ids is not None:
             existing = scene["entities"]
             self._check_allowed(entity_ids, set(existing))
-            keep = [e for e in entity_ids if e in existing and not recapture]
+            modes = group_modes or {}
+
+            def mode_of(e: str) -> str:
+                return modes.get(e, existing.get(e, {}).get("mode", "auto"))
+
+            keep = [
+                e
+                for e in entity_ids
+                if e in existing and not recapture and mode_of(e) == existing[e].get("mode", "auto")
+            ]
             fresh = [e for e in entity_ids if e not in keep]
-            captured = self._snapshot_many(fresh) if fresh else {}
+            captured = self._snapshot_many(fresh, {e: mode_of(e) for e in fresh}) if fresh else {}
             scene["entities"] = {
                 e: (existing[e] if e in keep else captured[e])
                 for e in entity_ids
@@ -179,7 +265,13 @@ class SceneManager:
     async def async_activate(self, scene_id: str, transition: float | None = None) -> None:
         scene = self._get(scene_id)
         calls = []
+        targets: dict[str, dict[str, Any]] = {}
         for entity_id, snap in scene["entities"].items():
+            if snap.get("members"):
+                targets.update(snap["members"])
+            else:
+                targets[entity_id] = snap
+        for entity_id, snap in targets.items():
             domain = entity_id.split(".")[0]
             turn_on = snap["state"] == STATE_ON
             data: dict[str, Any] = {"entity_id": entity_id}
@@ -198,7 +290,7 @@ class SceneManager:
                 )
             )
         results = await asyncio.gather(*calls, return_exceptions=True)
-        for entity_id, result in zip(scene["entities"], results):
+        for entity_id, result in zip(targets, results):
             if isinstance(result, Exception):
                 _LOGGER.warning("Could not restore %s: %s", entity_id, result)
 
@@ -215,14 +307,22 @@ class SceneManager:
         ]
 
 
+def _brief(snap: dict[str, Any]) -> dict[str, Any]:
+    brightness = snap["attributes"].get("brightness")
+    return {
+        "state": snap["state"],
+        "brightness": round(brightness / 255 * 100) if brightness is not None else None,
+        "rgb": snap.get("rgb"),
+    }
+
+
 def summarize(entities: dict[str, Any]) -> dict[str, Any]:
-    """Compact saved state per entity (state + brightness %) for the UI."""
+    """Compact saved state per entity (state, brightness %, colour, group mode) for the UI."""
     out: dict[str, Any] = {}
     for entity_id, snap in entities.items():
-        brightness = snap["attributes"].get("brightness")
-        out[entity_id] = {
-            "state": snap["state"],
-            "brightness": round(brightness / 255 * 100) if brightness is not None else None,
-            "rgb": snap.get("rgb"),
-        }
+        entry = _brief(snap)
+        entry["mode"] = snap.get("mode", "auto")
+        if snap.get("members"):
+            entry["members"] = {m: _brief(ms) for m, ms in snap["members"].items()}
+        out[entity_id] = entry
     return out
