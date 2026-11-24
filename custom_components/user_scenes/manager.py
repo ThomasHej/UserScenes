@@ -78,11 +78,13 @@ class SceneManager:
         if state is None:
             return []
         attrs = state.attributes
+        # Hue exposes these as sets (arbitrary order), light groups as lists
+        collections = (list, tuple, set, frozenset)
         ids = attrs.get("entity_id")
-        if isinstance(ids, (list, tuple)) and ids:
-            return [i for i in ids if isinstance(i, str) and i.startswith("light.") and i != entity_id]
+        if isinstance(ids, collections) and ids:
+            return sorted(i for i in ids if isinstance(i, str) and i.startswith("light.") and i != entity_id)
         names = attrs.get("lights")
-        if attrs.get("is_hue_group") and isinstance(names, (list, tuple)) and names:
+        if attrs.get("is_hue_group") and isinstance(names, collections) and names:
             wanted = set(names)
             registry = er.async_get(self.hass)
             entry = registry.async_get(entity_id)
