@@ -1,30 +1,287 @@
-/* User Scenes card: scene buttons + editor (create / edit / copy / delete). */
+/* User Scenes card
+ * - Tile grid of scenes (configurable columns / square tiles), auto-filled from saved scenes.
+ * - Tap = activate scene, long-press = open editor side panel.
+ */
 const US_DOMAIN = "user_scenes";
+const LONG_PRESS_MS = 500;
 
 const esc = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-class UserScenesCard extends HTMLElement {
-  setConfig(config) {
-    this._config = config || {};
-    this._editing = null;
-    this._data = null;
-    this._sig = null;
-    if (!this.shadowRoot) {
-      this.attachShadow({ mode: "open" });
-      this.shadowRoot.addEventListener("click", (e) => this._onClick(e));
-      this.shadowRoot.addEventListener("input", (e) => this._onInput(e));
-      this.shadowRoot.addEventListener("change", (e) => this._onInput(e));
+const lampIcon = (eid, on) =>
+  eid.startsWith("switch.")
+    ? on ? "mdi:toggle-switch" : "mdi:toggle-switch-off-outline"
+    : on ? "mdi:lightbulb" : "mdi:lightbulb-outline";
+
+const friendly = (hass, eid) => hass.states[eid]?.attributes.friendly_name || eid;
+
+async function usCall(hass, service, data, response = false) {
+  if (!response) return hass.callService(US_DOMAIN, service, data);
+  const r = await hass.callWS({
+    type: "call_service",
+    domain: US_DOMAIN,
+    service,
+    service_data: data,
+    return_response: true,
+  });
+  return r.response;
+}
+
+/* ------------------------------------------------------------------ editor */
+
+class UserScenesEditor extends HTMLElement {
+  open({ hass, card, allowed, scene }) {
+    this._hass = hass;
+    this._card = card;
+    this._id = scene?.id || null;
+    this._name = scene?.name || "";
+    this._saved = scene?.states || {};
+    this._selected = new Set(scene?.entities || []);
+    this._recapture = false;
+    this._editName = !scene;
+    const orphans = (scene?.entities || []).filter((e) => !allowed.includes(e));
+    this._rows = [...allowed, ...orphans];
+    this._allowed = allowed;
+
+    const root = this.attachShadow({ mode: "open" });
+    root.innerHTML = `
+      <style>
+        :host { position: fixed; inset: 0; z-index: 100; display: block;
+                font-family: var(--primary-font-family, Roboto, sans-serif); }
+        .backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.45); }
+        .panel { position: absolute; top: 0; right: 0; bottom: 0; width: min(440px, 100vw);
+                 display: flex; flex-direction: column; box-sizing: border-box;
+                 background: var(--card-background-color, #fff); color: var(--primary-text-color);
+                 box-shadow: -4px 0 16px rgba(0,0,0,.3); animation: slide .2s ease-out; }
+        @keyframes slide { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+        #head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 4px; }
+        #head h2 { flex: 1; margin: 0; font-size: 1.4em; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #head input { flex: 1; font: inherit; font-size: 1.2em; padding: 8px; min-width: 0;
+                      background: var(--secondary-background-color); color: var(--primary-text-color);
+                      border: none; border-bottom: 2px solid var(--primary-color); border-radius: 4px 4px 0 0; }
+        .ib { background: none; border: none; cursor: pointer; color: var(--primary-text-color);
+              border-radius: 50%; width: 40px; height: 40px; padding: 0; display: grid; place-items: center; }
+        .ib:hover { background: var(--secondary-background-color); }
+        #info { padding: 4px 20px 8px; color: var(--secondary-text-color); font-size: .9em; line-height: 1.4; }
+        #info p { margin: 6px 0; }
+        #list { flex: 1; overflow-y: auto; border-top: 1px solid var(--divider-color); }
+        .row { display: flex; align-items: center; gap: 16px; padding: 10px 20px; border-bottom: 1px solid var(--divider-color); }
+        .row ha-icon { --mdc-icon-size: 28px; color: var(--disabled-text-color); flex: none; }
+        .row ha-icon.on { color: var(--state-light-active-color, #ffc107); }
+        .row .nm { flex: 1; min-width: 0; }
+        .row .nm div:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .row .sub { font-size: .8em; color: var(--secondary-text-color); }
+        .row.off .nm div:first-child { color: var(--secondary-text-color); }
+        .row.off ha-icon { opacity: .45; }
+        #foot { padding: 12px 16px; border-top: 1px solid var(--divider-color); display: flex; flex-wrap: wrap; gap: 8px; }
+        #foot .hint { flex-basis: 100%; font-size: .85em; color: var(--secondary-text-color); }
+        button.b { font: inherit; cursor: pointer; padding: 8px 14px; border-radius: 8px; display: inline-flex; gap: 6px; align-items: center;
+                   background: var(--secondary-background-color); color: var(--primary-text-color); border: 1px solid var(--divider-color); }
+        button.b.primary { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: transparent; }
+        button.b.on { border-color: var(--primary-color); color: var(--primary-color); }
+        button.b.danger { color: var(--error-color); }
+        button.b ha-icon { --mdc-icon-size: 18px; }
+      </style>
+      <div class="backdrop" data-action="close"></div>
+      <div class="panel">
+        <div id="head"></div>
+        <div id="info">
+          <p>Select the lights/lamps you want to include in this scene.</p>
+          <p>Set the lamps the way you want them first (in Home Assistant or the native apps).
+             The icons show the state that will be saved when you press <b>Save</b>.</p>
+          <p>Use <b>Re-capture</b> to update all included lamps to their current state.
+             Lamps that are not selected are never touched.</p>
+        </div>
+        <div id="list"></div>
+        <div id="foot"></div>
+      </div>`;
+
+    root.addEventListener("click", (e) => this._onClick(e));
+    root.addEventListener("change", (e) => this._onChange(e));
+    root.addEventListener("input", (e) => {
+      if (e.target.id === "name") this._name = e.target.value;
+    });
+    root.addEventListener("keydown", (e) => {
+      if (e.target.id === "name" && e.key === "Enter") this._nameDone();
+    });
+    this._key = (e) => e.key === "Escape" && this.close();
+    document.addEventListener("keydown", this._key);
+
+    this._renderHead();
+    root.getElementById("list").innerHTML = this._rows
+      .map(
+        (eid) => `<div class="row" data-eid="${esc(eid)}">
+          <ha-icon></ha-icon>
+          <div class="nm"><div>${esc(friendly(hass, eid))}${this._allowed.includes(eid) ? "" : " (not in master list)"}</div><div class="sub"></div></div>
+          <ha-switch></ha-switch></div>`
+      )
+      .join("");
+    this._renderFoot();
+    this._refreshRows();
+  }
+
+  setHass(hass) {
+    this._hass = hass;
+    this._refreshRows();
+  }
+
+  close() {
+    document.removeEventListener("keydown", this._key);
+    this.remove();
+  }
+
+  // What will be stored for a lamp if Save is pressed now (null = not included)
+  _effective(eid) {
+    if (!this._selected.has(eid)) return null;
+    if (this._saved[eid] && !this._recapture) return { ...this._saved[eid], from: "saved" };
+    return { ...this._current(eid), from: "current" };
+  }
+
+  _current(eid) {
+    const s = this._hass.states[eid];
+    if (!s || ["unavailable", "unknown"].includes(s.state)) return { state: "unavailable", brightness: null };
+    const b = s.attributes.brightness;
+    return { state: s.state, brightness: b != null ? Math.round((b / 255) * 100) : null };
+  }
+
+  _refreshRows() {
+    const root = this.shadowRoot;
+    for (const row of root.querySelectorAll(".row")) {
+      const eid = row.dataset.eid;
+      const eff = this._effective(eid);
+      const v = eff || this._current(eid);
+      const on = v.state === "on";
+      const icon = row.querySelector("ha-icon");
+      icon.setAttribute("icon", lampIcon(eid, on));
+      icon.classList.toggle("on", on && !!eff);
+      row.classList.toggle("off", !eff);
+      let sub = "Not included";
+      if (eff) {
+        sub = v.state === "unavailable" ? "Unavailable – will be skipped" : on ? "On" + (v.brightness != null ? ` · ${v.brightness}%` : "") : "Off";
+        if (v.state !== "unavailable") sub += eff.from === "saved" ? " — saved state" : " — current state";
+      }
+      row.querySelector(".sub").textContent = sub;
+      const sw = row.querySelector("ha-switch");
+      if (sw.checked !== !!eff) sw.checked = !!eff;
     }
+  }
+
+  _renderHead() {
+    const root = this.shadowRoot;
+    const title = this._editName
+      ? `<input id="name" type="text" placeholder="Scene description" value="${esc(this._name)}">
+         <button class="ib" data-action="name-done" title="OK"><ha-icon icon="mdi:check"></ha-icon></button>`
+      : `<h2>${esc(this._name || "New scene")}</h2>
+         <button class="ib" data-action="name-edit" title="Edit name"><ha-icon icon="mdi:pencil"></ha-icon></button>`;
+    root.getElementById("head").innerHTML =
+      `<button class="ib" data-action="close" title="Close"><ha-icon icon="mdi:arrow-left"></ha-icon></button>${title}`;
+    if (this._editName) {
+      const input = root.getElementById("name");
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
+
+  _renderFoot() {
+    const existing = !!this._id;
+    this.shadowRoot.getElementById("foot").innerHTML = `
+      <button class="b primary" data-action="save">${existing ? "Save changes" : "Save scene"}</button>
+      ${existing ? `<button class="b ${this._recapture ? "on" : ""}" data-action="recapture"><ha-icon icon="mdi:camera-retake"></ha-icon>Re-capture</button>` : ""}
+      ${existing ? `<button class="b" data-action="copy"><ha-icon icon="mdi:content-copy"></ha-icon>Copy</button>
+      <button class="b danger" data-action="delete"><ha-icon icon="mdi:delete"></ha-icon>Delete</button>` : ""}
+      <button class="b" data-action="close">Cancel</button>
+      ${this._recapture ? `<div class="hint">All selected lamps will be saved with their current state.</div>` : ""}`;
+  }
+
+  _nameDone() {
+    if (!this._name.trim()) return;
+    this._editName = false;
+    this._renderHead();
+  }
+
+  _onChange(e) {
+    const row = e.target.closest?.(".row");
+    if (!row || e.target.tagName !== "HA-SWITCH") return;
+    const eid = row.dataset.eid;
+    e.target.checked ? this._selected.add(eid) : this._selected.delete(eid);
+    this._refreshRows();
+  }
+
+  async _onClick(e) {
+    const btn = e.composedPath().find((n) => n.dataset?.action);
+    if (!btn) return;
+    try {
+      switch (btn.dataset.action) {
+        case "close":
+          this.close();
+          break;
+        case "name-edit":
+          this._editName = true;
+          this._renderHead();
+          break;
+        case "name-done":
+          this._nameDone();
+          break;
+        case "recapture":
+          this._recapture = !this._recapture;
+          this._renderFoot();
+          this._refreshRows();
+          break;
+        case "save": {
+          const name = this._name.trim();
+          const entities = this._rows.filter((x) => this._selected.has(x));
+          if (!name) {
+            this._editName = true;
+            this._renderHead();
+            return alert("Please enter a description for the scene.");
+          }
+          if (!entities.length) return alert("Select at least one lamp.");
+          if (this._id) await usCall(this._hass, "update", { scene_id: this._id, name, entities, recapture: this._recapture });
+          else await usCall(this._hass, "save", { name, entities });
+          await this._card._load();
+          this.close();
+          break;
+        }
+        case "copy": {
+          const r = await usCall(this._hass, "copy", { scene_id: this._id, name: `${this._name.trim()} (copy)` }, true);
+          await this._card._load();
+          this.close();
+          this._card._edit(r.scene_id);
+          break;
+        }
+        case "delete":
+          if (!confirm(`Delete scene "${this._name}"?`)) return;
+          await usCall(this._hass, "delete", { scene_id: this._id });
+          await this._card._load();
+          this.close();
+          break;
+      }
+    } catch (err) {
+      alert(err.message || String(err));
+    }
+  }
+}
+
+/* -------------------------------------------------------------------- card */
+
+class UserScenesCard extends HTMLElement {
+  static getConfigElement() {
+    return document.createElement("user-scenes-card-editor");
+  }
+
+  static getStubConfig() {
+    return { title: "", columns: 4, square: false, show_add: true };
+  }
+
+  setConfig(config) {
+    this._config = { columns: 4, square: false, show_add: true, ...config };
+    this._sig = null;
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._render();
   }
 
   getCardSize() {
-    return 4;
-  }
-
-  static getStubConfig() {
-    return { title: "Scenes" };
+    return Math.max(2, Math.ceil(((this._data?.scenes.length || 0) + 1) / this._config.columns) * 2);
   }
 
   set hass(hass) {
@@ -32,12 +289,14 @@ class UserScenesCard extends HTMLElement {
     const sig = JSON.stringify(
       Object.values(hass.states)
         .filter((s) => s.entity_id.startsWith("button.") && s.attributes.user_scenes)
-        .map((s) => [s.attributes.scene_id, s.attributes.friendly_name, s.attributes.entities])
+        .map((s) => [s.attributes.scene_id, s.attributes.friendly_name, s.attributes.entities, s.attributes.states])
     );
     if (sig !== this._sig) {
       this._sig = sig;
       this._load();
     }
+    this._updateActive();
+    if (this._editor?.isConnected) this._editor.setHass(hass);
   }
 
   async _load() {
@@ -47,185 +306,149 @@ class UserScenesCard extends HTMLElement {
     } catch (err) {
       this._error = err.message || "User Scenes integration not loaded";
     }
-    if (!this._editing) this._render();
-  }
-
-  async _call(service, data, response = false) {
-    if (!response) return this._hass.callService(US_DOMAIN, service, data);
-    const r = await this._hass.callWS({
-      type: "call_service",
-      domain: US_DOMAIN,
-      service,
-      service_data: data,
-      return_response: true,
-    });
-    return r.response;
+    this._render();
   }
 
   _scene(id) {
     return this._data?.scenes.find((s) => s.id === id);
   }
 
-  _friendly(eid) {
-    return this._hass?.states[eid]?.attributes.friendly_name || eid;
+  _edit(id) {
+    if (!this._data) return;
+    const ed = document.createElement("user-scenes-editor");
+    ed.open({ hass: this._hass, card: this, allowed: this._data.allowed, scene: id ? this._scene(id) : null });
+    document.body.appendChild(ed);
+    this._editor = ed;
   }
 
-  _render() {
-    if (!this.shadowRoot) return;
-    const d = this._data;
-    let body = "";
-    if (this._error) {
-      body = `<p class="err">${esc(this._error)}</p>`;
-    } else if (!d) {
-      body = `<p>Loading…</p>`;
-    } else if (this._editing) {
-      body = this._renderEditor(d);
-    } else {
-      const scenes = d.scenes
-        .map(
-          (s) => `<div class="scene">
-            <button class="run" data-action="activate" data-id="${s.id}">${esc(s.name)}</button>
-            <button class="icon" title="Edit" data-action="edit" data-id="${s.id}">✎</button>
-          </div>`
-        )
-        .join("");
-      body = `<div class="scenes">${scenes || "<p>No scenes yet.</p>"}</div>
-        <button class="primary" data-action="new">+ New scene</button>`;
-    }
-    this.shadowRoot.innerHTML = `
-      <style>
-        .wrap { padding: 16px; }
-        .scenes { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-        .scene { display: flex; }
-        button { font: inherit; cursor: pointer; border: 1px solid var(--divider-color); border-radius: 8px;
-                 background: var(--secondary-background-color); color: var(--primary-text-color); padding: 10px 14px; }
-        button.run { border-radius: 8px 0 0 8px; background: var(--primary-color); color: var(--text-primary-color, #fff); border: none; }
-        button.icon { border-radius: 0 8px 8px 0; padding: 10px; }
-        button.primary { background: var(--primary-color); color: var(--text-primary-color, #fff); border: none; }
-        button.danger { color: var(--error-color); }
-        input[type=text] { width: 100%; box-sizing: border-box; padding: 10px; font: inherit; margin: 6px 0 12px;
-                           background: var(--card-background-color); color: var(--primary-text-color);
-                           border: 1px solid var(--divider-color); border-radius: 6px; }
-        label.lamp { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
-        label.opt { display: flex; gap: 10px; padding: 8px 0; font-size: 0.9em; color: var(--secondary-text-color); }
-        .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--disabled-text-color); }
-        .dot.on { background: var(--state-light-active-color, #ffc107); }
-        .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-        .err { color: var(--error-color); }
-        h3 { margin: 0 0 8px; }
-      </style>
-      <ha-card header="${esc(this._config.title || "Scenes")}"><div class="wrap">${body}</div></ha-card>`;
-  }
-
-  _renderEditor(d) {
-    const e = this._editing;
-    const lamps = d.allowed
-      .map((eid) => {
-        const on = this._hass.states[eid]?.state === "on";
-        return `<label class="lamp"><input type="checkbox" data-eid="${esc(eid)}" ${e.selected.has(eid) ? "checked" : ""}>
-          <span class="dot ${on ? "on" : ""}"></span>${esc(this._friendly(eid))}</label>`;
-      })
-      .join("");
-    // lamps saved in the scene but no longer in the master list
-    const orphans = [...e.selected]
-      .filter((eid) => !d.allowed.includes(eid))
-      .map(
-        (eid) => `<label class="lamp"><input type="checkbox" data-eid="${esc(eid)}" checked>
-          <span class="dot"></span>${esc(this._friendly(eid))} (not in master list)</label>`
-      )
-      .join("");
-    const isNew = !e.id;
-    return `<h3>${isNew ? "New scene" : "Edit scene"}</h3>
-      <p style="margin:0;color:var(--secondary-text-color);font-size:.9em">
-        ${isNew ? "Set your lamps as you want them first, then pick which ones to include." : ""}</p>
-      <input type="text" id="name" placeholder="Description" value="${esc(e.name)}">
-      ${lamps}${orphans}
-      ${isNew ? "" : `<label class="opt"><input type="checkbox" id="recapture" ${e.recapture ? "checked" : ""}>
-        Re-capture current state of all selected lamps (otherwise saved states are kept; newly added lamps use their current state)</label>`}
-      <div class="row">
-        <button class="primary" data-action="save">${isNew ? "Save current state" : "Save changes"}</button>
-        ${isNew ? "" : `<button data-action="copy">Make a copy</button>
-        <button class="danger" data-action="delete">Delete</button>`}
-        <button data-action="cancel">Cancel</button>
-      </div>`;
-  }
-
-  _onInput(ev) {
-    const t = ev.composedPath()[0];
-    if (!this._editing || !t) return;
-    if (t.id === "name") this._editing.name = t.value;
-    else if (t.id === "recapture") this._editing.recapture = t.checked;
-    else if (t.dataset?.eid) {
-      t.checked ? this._editing.selected.add(t.dataset.eid) : this._editing.selected.delete(t.dataset.eid);
-    }
-  }
-
-  _open(id) {
-    const s = id ? this._scene(id) : null;
-    this._editing = {
-      id: id || null,
-      name: s ? s.name : "",
-      selected: new Set(s ? s.entities : []),
-      recapture: false,
-    };
-    this._render();
-  }
-
-  async _onClick(ev) {
-    const btn = ev.composedPath().find((n) => n.dataset?.action);
-    if (!btn) return;
-    const { action, id } = btn.dataset;
-    const e = this._editing;
+  async _activate(tile) {
+    tile.classList.add("pressed");
+    setTimeout(() => tile.classList.remove("pressed"), 250);
     try {
-      switch (action) {
-        case "activate":
-          await this._call("activate", { scene_id: id });
-          break;
-        case "edit":
-          this._open(id);
-          break;
-        case "new":
-          this._open(null);
-          break;
-        case "cancel":
-          this._editing = null;
-          this._render();
-          break;
-        case "save": {
-          const name = e.name.trim();
-          const entities = [...e.selected];
-          if (!name) return alert("Please enter a description.");
-          if (!entities.length) return alert("Select at least one lamp.");
-          if (e.id) await this._call("update", { scene_id: e.id, name, entities, recapture: e.recapture });
-          else await this._call("save", { name, entities });
-          this._editing = null;
-          await this._load();
-          break;
-        }
-        case "copy": {
-          const r = await this._call("copy", { scene_id: e.id, name: `${e.name.trim() || "Scene"} (copy)` }, true);
-          this._editing = null;
-          await this._load();
-          this._open(r.scene_id);
-          break;
-        }
-        case "delete":
-          if (!confirm(`Delete scene "${e.name}"?`)) return;
-          await this._call("delete", { scene_id: e.id });
-          this._editing = null;
-          await this._load();
-          break;
-      }
+      await usCall(this._hass, "activate", { scene_id: tile.dataset.id });
     } catch (err) {
       alert(err.message || String(err));
     }
   }
+
+  // Highlight scenes whose saved on/off states currently match reality
+  _updateActive() {
+    if (!this._data || !this.shadowRoot) return;
+    for (const tile of this.shadowRoot.querySelectorAll(".tile[data-id]")) {
+      const scene = this._scene(tile.dataset.id);
+      const active =
+        scene && Object.entries(scene.states).every(([eid, v]) => this._hass.states[eid]?.state === v.state);
+      tile.classList.toggle("active", !!active);
+    }
+  }
+
+  _render() {
+    const c = this._config;
+    const d = this._data;
+    let body;
+    if (this._error) body = `<p class="msg err">${esc(this._error)}</p>`;
+    else if (!d) body = `<p class="msg">Loading…</p>`;
+    else {
+      const tiles = d.scenes
+        .map(
+          (s) => `<div class="tile" tabindex="0" data-id="${s.id}">
+            <ha-icon icon="mdi:lightbulb-group"></ha-icon><span>${esc(s.name)}</span></div>`
+        )
+        .join("");
+      const add = c.show_add
+        ? `<div class="tile add" tabindex="0" data-add="1"><ha-icon icon="mdi:plus"></ha-icon><span>New scene</span></div>`
+        : "";
+      body = `<div class="grid">${tiles}${add}</div>`;
+    }
+    this.shadowRoot.innerHTML = `
+      <style>
+        .title { padding: 0 8px 8px; font-size: 1.2em; font-weight: 500; color: var(--primary-text-color); }
+        .grid { display: grid; grid-template-columns: repeat(${Math.max(1, Number(c.columns) || 4)}, minmax(0, 1fr)); gap: 8px; }
+        .tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+                padding: 16px 8px; min-height: 100px; box-sizing: border-box; text-align: center; cursor: pointer;
+                border-radius: var(--ha-card-border-radius, 12px); border: 1px solid var(--divider-color);
+                background: var(--ha-card-background, var(--card-background-color, #fff)); color: var(--primary-text-color);
+                user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: manipulation;
+                transition: transform .12s, border-color .2s; }
+        ${c.square ? ".tile { aspect-ratio: 1 / 1; }" : ""}
+        .tile ha-icon { --mdc-icon-size: 40px; color: var(--state-icon-color, var(--secondary-text-color)); pointer-events: none; }
+        .tile span { font-size: 1.05em; overflow-wrap: anywhere; pointer-events: none; }
+        .tile.active { border-color: var(--state-light-active-color, #ffc107); }
+        .tile.active ha-icon { color: var(--state-light-active-color, #ffc107); }
+        .tile.pressed { transform: scale(.95); }
+        .tile.add { border-style: dashed; background: transparent; color: var(--secondary-text-color); }
+        .msg { padding: 8px; } .err { color: var(--error-color); }
+      </style>
+      <div>${c.title ? `<div class="title">${esc(c.title)}</div>` : ""}${body}</div>`;
+
+    for (const t of this.shadowRoot.querySelectorAll(".tile")) {
+      t.addEventListener("pointerdown", () => {
+        this._lp = false;
+        clearTimeout(this._timer);
+        if (t.dataset.add) return;
+        this._timer = setTimeout(() => {
+          this._lp = true;
+          this._edit(t.dataset.id);
+        }, LONG_PRESS_MS);
+      });
+      for (const ev of ["pointerup", "pointerleave", "pointercancel"]) {
+        t.addEventListener(ev, () => clearTimeout(this._timer));
+      }
+      t.addEventListener("click", () => {
+        if (this._lp) {
+          this._lp = false;
+          return;
+        }
+        t.dataset.add ? this._edit(null) : this._activate(t);
+      });
+      t.addEventListener("keydown", (e) => e.key === "Enter" && t.click());
+      t.addEventListener("contextmenu", (e) => e.preventDefault());
+    }
+    this._updateActive();
+  }
 }
 
+/* ------------------------------------------------- visual config editor */
+
+class UserScenesCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = config;
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (this._form) this._form.hass = hass;
+  }
+
+  _render() {
+    if (!this._form) {
+      const labels = { title: "Title (optional)", columns: "Columns", square: "Square tiles", show_add: "Show “New scene” tile" };
+      this._form = document.createElement("ha-form");
+      this._form.computeLabel = (s) => labels[s.name] || s.name;
+      this._form.schema = [
+        { name: "title", selector: { text: {} } },
+        { name: "columns", selector: { number: { min: 1, max: 10, mode: "box" } } },
+        { name: "square", selector: { boolean: {} } },
+        { name: "show_add", selector: { boolean: {} } },
+      ];
+      this._form.addEventListener("value-changed", (e) => {
+        this._config = e.detail.value;
+        this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: this._config }, bubbles: true, composed: true }));
+      });
+      this.appendChild(this._form);
+    }
+    this._form.hass = this._hass;
+    this._form.data = { columns: 4, square: false, show_add: true, ...this._config };
+  }
+}
+
+customElements.define("user-scenes-editor", UserScenesEditor);
 customElements.define("user-scenes-card", UserScenesCard);
+customElements.define("user-scenes-card-editor", UserScenesCardEditor);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "user-scenes-card",
   name: "User Scenes",
-  description: "Save, edit, copy and restore lamp scenes.",
+  description: "Tile grid of lamp scenes: tap to activate, long-press to edit.",
 });

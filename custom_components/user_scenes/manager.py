@@ -176,6 +176,23 @@ class SceneManager:
     @callback
     def as_list(self) -> list[dict[str, Any]]:
         return [
-            {"id": sid, "name": s["name"], "entities": list(s["entities"])}
+            {
+                "id": sid,
+                "name": s["name"],
+                "entities": list(s["entities"]),
+                "states": summarize(s["entities"]),
+            }
             for sid, s in self.scenes.items()
         ]
+
+
+def summarize(entities: dict[str, Any]) -> dict[str, Any]:
+    """Compact saved state per entity (state + brightness %) for the UI."""
+    out: dict[str, Any] = {}
+    for entity_id, snap in entities.items():
+        brightness = snap["attributes"].get("brightness")
+        out[entity_id] = {
+            "state": snap["state"],
+            "brightness": round(brightness / 255 * 100) if brightness is not None else None,
+        }
+    return out

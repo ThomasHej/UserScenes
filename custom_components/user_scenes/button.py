@@ -11,7 +11,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, SIGNAL_SCENES_UPDATED
-from .manager import SceneManager
+from .manager import SceneManager, summarize
 
 
 async def async_setup_entry(
@@ -61,6 +61,7 @@ class SceneButton(ButtonEntity):
             "user_scenes": True,
             "scene_id": self.scene_id,
             "entities": list(scene["entities"]),
+            "states": summarize(scene["entities"]),
         }
 
     async def async_added_to_hass(self) -> None:
