@@ -1,7 +1,7 @@
 /* User Scenes card
  * - Tile grid of scenes (configurable columns / square tiles), auto-filled from saved scenes.
- * - Tap = activate scene, long-press = rumble mode (not while editing the dashboard):
- *   click a tile to edit it, drag a tile to change its position.
+ * - Tap = activate scene, long-press = menu (not while editing the dashboard):
+ *   Edit Scene / Reorder Scenes (rumble mode, drag tiles) / Create new Scene.
  */
 const US_DOMAIN = "user_scenes";
 const LONG_PRESS_MS = 500;
@@ -42,13 +42,13 @@ class UserScenesEditor extends HTMLElement {
   open({ hass, card, allowed, scene }) {
     this._hass = hass;
     this._card = card;
-    this._id = scene.id;
-    this._name = scene.name;
-    this._saved = scene.states || {};
-    this._selected = new Set(scene.entities);
+    this._id = scene?.id || null; // null = brand new, blank scene
+    this._name = scene?.name || "";
+    this._saved = scene?.states || {};
+    this._selected = new Set(scene?.entities || []);
     this._recapture = false;
-    this._editName = false;
-    const orphans = scene.entities.filter((e) => !allowed.includes(e));
+    this._editName = !scene;
+    const orphans = (scene?.entities || []).filter((e) => !allowed.includes(e));
     this._rows = [...allowed, ...orphans].sort(
       (a, b) =>
         Number(isGroup(hass, b)) - Number(isGroup(hass, a)) ||
@@ -196,7 +196,7 @@ class UserScenesEditor extends HTMLElement {
   _renderHead() {
     const root = this.shadowRoot;
     const title = this._editName
-      ? `<input id="name" type="text" placeholder="Scene description" value="${esc(this._name)}">
+      ? `<input id="name" type="text" placeholder="Scene name" value="${esc(this._name)}">
          <button class="ib" data-action="name-done" title="OK"><ha-icon icon="mdi:check"></ha-icon></button>`
       : `<h2>${esc(this._name)}</h2>
          <button class="ib" data-action="name-edit" title="Edit name"><ha-icon icon="mdi:pencil"></ha-icon></button>`;
@@ -210,7 +210,11 @@ class UserScenesEditor extends HTMLElement {
   }
 
   _renderFoot() {
-    this.shadowRoot.getElementById("foot").innerHTML = `
+    const isNew = !this._id;
+    this.shadowRoot.getElementById("foot").innerHTML = isNew
+      ? `<button class="b primary" data-action="save">Save new scene</button>
+         <button class="b" data-action="close">Cancel</button>`
+      : `
       <button class="b primary" data-action="save">Save changes</button>
       <button class="b ${this._recapture ? "on" : ""}" data-action="recapture"><ha-icon icon="mdi:camera-retake"></ha-icon>Re-capture</button>
       <button class="b" data-action="copy"><ha-icon icon="mdi:content-copy"></ha-icon>New Duplicate</button>
@@ -262,7 +266,8 @@ class UserScenesEditor extends HTMLElement {
             return alert("Please enter a description for the scene.");
           }
           if (!entities.length) return alert("Select at least one lamp.");
-          await usCall(this._hass, "update", { scene_id: this._id, name, entities, recapture: this._recapture });
+          if (this._id) await usCall(this._hass, "update", { scene_id: this._id, name, entities, recapture: this._recapture });
+          else await usCall(this._hass, "save", { name, entities });
           await this._card._load();
           this.close();
           break;
@@ -284,6 +289,51 @@ class UserScenesEditor extends HTMLElement {
     } catch (err) {
       alert(err.message || String(err));
     }
+  }
+}
+
+/* -------------------------------------------------------------------- menu */
+
+class UserScenesMenu extends HTMLElement {
+  open({ card, id, name }) {
+    const root = this.attachShadow({ mode: "open" });
+    root.innerHTML = `
+      <style>
+        :host { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center;
+                font-family: var(--primary-font-family, Roboto, sans-serif); }
+        .backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.45); }
+        .dlg { position: relative; width: min(340px, 90vw); padding: 8px 0; border-radius: 16px;
+               background: var(--card-background-color, #fff); color: var(--primary-text-color);
+               box-shadow: 0 8px 32px rgba(0,0,0,.4); animation: pop .15s ease-out; }
+        @keyframes pop { from { transform: scale(.92); opacity: 0; } to { transform: none; opacity: 1; } }
+        h3 { margin: 0; padding: 14px 20px 8px; font-weight: 500; font-size: 1.1em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        button { display: flex; align-items: center; gap: 14px; width: 100%; padding: 14px 20px; font: inherit; text-align: left;
+                 background: none; border: none; color: inherit; cursor: pointer; }
+        button:hover { background: var(--secondary-background-color); }
+        ha-icon { color: var(--secondary-text-color); }
+      </style>
+      <div class="backdrop" data-a="close"></div>
+      <div class="dlg">
+        <h3>${esc(name)}</h3>
+        <button data-a="edit"><ha-icon icon="mdi:pencil"></ha-icon>Edit Scene</button>
+        <button data-a="reorder"><ha-icon icon="mdi:swap-horizontal"></ha-icon>Reorder Scenes</button>
+        <button data-a="new"><ha-icon icon="mdi:plus"></ha-icon>Create new Scene</button>
+      </div>`;
+    root.addEventListener("click", (e) => {
+      const a = e.composedPath().find((n) => n.dataset?.a)?.dataset.a;
+      if (!a) return;
+      this.close();
+      if (a === "edit") card._edit(id);
+      else if (a === "reorder") card._startReorder();
+      else if (a === "new") card._edit(null);
+    });
+    this._key = (e) => e.key === "Escape" && this.close();
+    document.addEventListener("keydown", this._key);
+  }
+
+  close() {
+    document.removeEventListener("keydown", this._key);
+    this.remove();
   }
 }
 
@@ -358,9 +408,10 @@ class UserScenesCard extends HTMLElement {
   }
 
   _edit(id) {
-    if (!this._data || !this._scene(id)) return;
+    const scene = id ? this._scene(id) : null;
+    if (!this._data || (id && !scene)) return;
     const ed = document.createElement("user-scenes-editor");
-    ed.open({ hass: this._hass, card: this, allowed: this._data.allowed, scene: this._scene(id) });
+    ed.open({ hass: this._hass, card: this, allowed: this._data.allowed, scene });
     document.body.appendChild(ed);
     this._editor = ed;
   }
@@ -405,7 +456,15 @@ class UserScenesCard extends HTMLElement {
     return t;
   }
 
-  // ---- rumble mode: click = edit, drag = change position
+  _openMenu(id) {
+    const scene = this._scene(id);
+    if (!scene) return;
+    const menu = document.createElement("user-scenes-menu");
+    menu.open({ card: this, id, name: scene.name });
+    document.body.appendChild(menu);
+  }
+
+  // ---- rumble mode (Reorder Scenes): drag to change position
   _startReorder() {
     this._reorder = true;
     this._render();
@@ -453,10 +512,7 @@ class UserScenesCard extends HTMLElement {
           if (!d) return;
           d.tile.style.transform = "";
           d.tile.classList.remove("dragging");
-          if (!d.moved) {
-            if (ev.type === "pointerup" && d.id) this._edit(d.id);
-            return;
-          }
+          if (!d.moved) return;
           const order = [...grid.querySelectorAll(".tile")].map((x) => x.dataset.id || "");
           const byId = Object.fromEntries(this._data.scenes.map((x) => [x.id, x]));
           this._data.scenes = order.filter(Boolean).map((id) => byId[id]);
@@ -551,7 +607,7 @@ class UserScenesCard extends HTMLElement {
         })
         .join("");
       const bar = reorder
-        ? `<div class="bar"><span>Click a scene to edit it. Click and drag to change position.</span><button data-done="1">Done</button></div>`
+        ? `<div class="bar"><span>Drag the scenes to change their position.</span><button data-done="1">Done</button></div>`
         : "";
       body = `${bar}<div class="grid">${tiles}</div>`;
     }
@@ -596,7 +652,7 @@ class UserScenesCard extends HTMLElement {
         if (this._inEditMode()) return;
         this._timer = setTimeout(() => {
           this._lp = true;
-          this._startReorder();
+          this._openMenu(t.dataset.id);
         }, LONG_PRESS_MS);
       });
       for (const ev of ["pointerup", "pointerleave", "pointercancel"]) {
@@ -675,6 +731,7 @@ class UserScenesCardEditor extends HTMLElement {
 }
 
 customElements.define("user-scenes-editor", UserScenesEditor);
+customElements.define("user-scenes-menu", UserScenesMenu);
 customElements.define("user-scenes-card", UserScenesCard);
 customElements.define("user-scenes-card-editor", UserScenesCardEditor);
 window.customCards = window.customCards || [];

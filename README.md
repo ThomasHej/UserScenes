@@ -32,12 +32,14 @@ A scene counts as *active* when every included lamp currently matches it (on/off
 It is re-evaluated on every state change.
 
 - The first scene ("Scene 1", all lamps in the master list) is created automatically.
-  More scenes are made with **New Duplicate** in the editor.
 - **Tap** a tile to restore the scene.
-- **Long-press** a tile (disabled while editing the dashboard) to enter rumble mode:
-  click a scene to open its editor, drag scenes (and, with `fill_empty`, the empty tiles) to change position, press **Done** when finished.
-- The editor side panel: edit the name (pencil), switch lamps in/out, see the state/colour that will be saved,
-  **Re-capture**, **New Duplicate**, **Delete**, **Save changes**.
+- **Long-press** a tile (disabled while editing the dashboard) to get a menu:
+  - **Edit Scene** - opens the editor side panel: edit the name (pencil), switch lamps in/out, see the
+    state/colour that will be saved, **Re-capture**, **New Duplicate**, **Delete**, **Save changes**.
+  - **Reorder Scenes** - rumble mode: drag scenes (and, with `fill_empty`, the empty tiles) to change position,
+    press **Done** when finished.
+  - **Create new Scene** - opens the editor with a blank scene (all lamps off); enter a name, switch on the
+    lamps to include and save.
 - In the editor, groups are listed first, then lamps/switches alphabetically. Hue rooms/zones and light groups get the multi-lamp icon. The last remaining scene cannot be deleted.
 
 Each scene is also a `button.*` entity (usable in automations/other dashboards) and there are services
