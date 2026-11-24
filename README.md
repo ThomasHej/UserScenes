@@ -35,7 +35,7 @@ It is re-evaluated on every state change.
   More scenes are made with **New Duplicate** in the editor.
 - **Tap** a tile to restore the scene.
 - **Long-press** a tile (disabled while editing the dashboard) to enter rumble mode:
-  click a scene to open its editor, drag a scene to change position, press **Done** when finished.
+  click a scene to open its editor, drag scenes (and, with `fill_empty`, the empty tiles) to change position, press **Done** when finished.
 - The editor side panel: edit the name (pencil), switch lamps in/out, see the state/colour that will be saved,
   **Re-capture**, **New Duplicate**, **Delete**, **Save changes**.
 - In the editor, groups are listed first, then lamps/switches alphabetically. Hue rooms/zones and light groups get the multi-lamp icon. The last remaining scene cannot be deleted.

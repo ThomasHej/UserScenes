@@ -38,14 +38,17 @@ class SceneManager:
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         # scene_id -> {"name": str, "entities": {entity_id: {"state", "attributes"}}}
         self.scenes: dict[str, dict[str, Any]] = {}
+        # Grid layout: scene ids in display order, "" = an empty placeholder tile
+        self.layout: list[str] = []
         self._default_lock = asyncio.Lock()
 
     async def async_load(self) -> None:
         data = await self._store.async_load()
         self.scenes = (data or {}).get("scenes", {})
+        self.layout = (data or {}).get("layout", [])
 
     async def _async_commit(self) -> None:
-        await self._store.async_save({"scenes": self.scenes})
+        await self._store.async_save({"scenes": self.scenes, "layout": self.layout})
         async_dispatcher_send(self.hass, SIGNAL_SCENES_UPDATED)
 
     # ------------------------------------------------------------------ helpers
@@ -155,9 +158,12 @@ class SceneManager:
         await self._async_commit()
 
     async def async_reorder(self, scene_ids: list[str]) -> None:
-        ordered = [i for i in scene_ids if i in self.scenes]
+        """Store the grid layout; "" entries are empty placeholder tiles."""
+        layout = [i for i in scene_ids if i == "" or i in self.scenes]
+        ordered = [i for i in layout if i]
         ordered += [i for i in self.scenes if i not in ordered]
         self.scenes = {i: self.scenes[i] for i in ordered}
+        self.layout = layout
         await self._async_commit()
 
     async def async_ensure_default(self) -> None:

@@ -102,7 +102,7 @@
       "fields": {
         "scene_ids": {
           "name": "Scene IDs",
-          "description": "Scene IDs in the wanted order."
+          "description": "Scene IDs in the wanted order. An empty string \"\" is an empty placeholder tile."
         }
       }
     }

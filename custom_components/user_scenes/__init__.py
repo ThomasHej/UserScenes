@@ -142,7 +142,12 @@ async def ws_list(hass: HomeAssistant, connection, msg) -> None:
         return
     await manager.async_ensure_default()
     connection.send_result(
-        msg["id"], {"allowed": manager.allowed, "scenes": manager.as_list()}
+        msg["id"],
+        {
+            "allowed": manager.allowed,
+            "scenes": manager.as_list(),
+            "layout": manager.layout,
+        },
     )
 
 

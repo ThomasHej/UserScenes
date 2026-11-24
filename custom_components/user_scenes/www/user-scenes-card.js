@@ -374,6 +374,36 @@ class UserScenesCard extends HTMLElement {
     }
   }
 
+  // Display order: scene ids, "" = empty placeholder tile (only with fill_empty)
+  _tokens() {
+    const d = this._data;
+    const c = this._config;
+    const cols = Math.max(1, Number(c.columns) || 4);
+    const ids = new Set(d.scenes.map((x) => x.id));
+    const seen = new Set();
+    const t = (d.layout || []).filter((x) => x === "" || (ids.has(x) && !seen.has(x) && seen.add(x)));
+    for (const sc of d.scenes) {
+      if (seen.has(sc.id)) continue;
+      seen.add(sc.id);
+      // a new scene takes the place of an empty tile (if any), otherwise it is appended
+      const e = c.fill_empty ? t.lastIndexOf("") : -1;
+      if (e >= 0) t[e] = sc.id;
+      else t.push(sc.id);
+    }
+    if (!c.fill_empty) return t.filter((x) => x !== "");
+    const need = (cols - (d.scenes.length % cols)) % cols;
+    let have = t.filter((x) => x === "").length;
+    while (have > need) {
+      t.splice(t.lastIndexOf(""), 1);
+      have--;
+    }
+    while (have < need) {
+      t.push("");
+      have++;
+    }
+    return t;
+  }
+
   // ---- rumble mode: click = edit, drag = change position
   _startReorder() {
     this._reorder = true;
@@ -387,7 +417,7 @@ class UserScenesCard extends HTMLElement {
 
   _bindReorder(root) {
     const grid = root.querySelector(".grid");
-    for (const t of root.querySelectorAll(".tile[data-id]")) {
+    for (const t of root.querySelectorAll(".tile")) {
       t.addEventListener("pointerdown", (e) => {
         if (e.button) return;
         const r = t.getBoundingClientRect();
@@ -403,7 +433,7 @@ class UserScenesCard extends HTMLElement {
           d.tile.style.transform = "none";
           const n = d.tile.getBoundingClientRect();
           d.tile.style.transform = `translate(${ev.clientX - d.gx - n.left}px, ${ev.clientY - d.gy - n.top}px)`;
-          for (const o of grid.querySelectorAll(".tile[data-id]")) {
+          for (const o of grid.querySelectorAll(".tile")) {
             if (o === d.tile) continue;
             const r2 = o.getBoundingClientRect();
             if (ev.clientX >= r2.left && ev.clientX <= r2.right && ev.clientY >= r2.top && ev.clientY <= r2.bottom) {
@@ -423,12 +453,13 @@ class UserScenesCard extends HTMLElement {
           d.tile.style.transform = "";
           d.tile.classList.remove("dragging");
           if (!d.moved) {
-            if (ev.type === "pointerup") this._edit(d.id);
+            if (ev.type === "pointerup" && d.id) this._edit(d.id);
             return;
           }
-          const order = [...grid.querySelectorAll(".tile[data-id]")].map((x) => x.dataset.id);
+          const order = [...grid.querySelectorAll(".tile")].map((x) => x.dataset.id || "");
           const byId = Object.fromEntries(this._data.scenes.map((x) => [x.id, x]));
-          this._data.scenes = order.map((id) => byId[id]);
+          this._data.scenes = order.filter(Boolean).map((id) => byId[id]);
+          this._data.layout = order;
           usCall(this._hass, "reorder", { scene_ids: order }).catch((err) => alert(err.message || String(err)));
         };
         window.addEventListener("pointermove", move);
@@ -509,19 +540,19 @@ class UserScenesCard extends HTMLElement {
     if (this._error) body = `<p class="msg err">${esc(this._error)}</p>`;
     else if (!d) body = `<p class="msg">Loading…</p>`;
     else {
-      const tiles = d.scenes
-        .map(
-          (s) => `<div class="tile ${reorder ? "wiggle" : ""}" tabindex="0" data-id="${s.id}">
-            <ha-icon icon="mdi:lightbulb-group"></ha-icon><span>${esc(s.name)}</span>${c.show_state ? `<span class="st"></span>` : ""}</div>`
-        )
+      const byId = Object.fromEntries(d.scenes.map((x) => [x.id, x]));
+      const tiles = this._tokens()
+        .map((tok) => {
+          if (!tok) return `<div class="tile empty ${reorder ? "wiggle" : ""}" aria-hidden="true">&nbsp;</div>`;
+          const sc = byId[tok];
+          return `<div class="tile ${reorder ? "wiggle" : ""}" tabindex="0" data-id="${sc.id}">
+            <ha-icon icon="mdi:lightbulb-group"></ha-icon><span>${esc(sc.name)}</span>${c.show_state ? `<span class="st"></span>` : ""}</div>`;
+        })
         .join("");
-      const cols = Math.max(1, Number(c.columns) || 4);
-      const pad = c.fill_empty ? (cols - (d.scenes.length % cols)) % cols : 0;
-      const empties = `<div class="tile empty" aria-hidden="true">&nbsp;</div>`.repeat(pad);
       const bar = reorder
         ? `<div class="bar"><span>Click a scene to edit it. Click and drag to change position.</span><button data-done="1">Done</button></div>`
         : "";
-      body = `${bar}<div class="grid">${tiles}${empties}</div>`;
+      body = `${bar}<div class="grid">${tiles}</div>`;
     }
     this.shadowRoot.innerHTML = `
       <style>
@@ -542,6 +573,7 @@ class UserScenesCard extends HTMLElement {
         .tile.wiggle:nth-child(2n) { animation-delay: -.14s; }
         .tile.dragging { animation: none; cursor: grabbing; z-index: 5; opacity: .92; box-shadow: 0 6px 18px rgba(0,0,0,.35); transition: none; }
         .tile.empty { pointer-events: none; }
+        .tile.wiggle.empty { pointer-events: auto; border-style: dashed; opacity: .75; }
         @keyframes wiggle { from { transform: rotate(-1.2deg); } to { transform: rotate(1.2deg); } }
         .bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px 10px; color: var(--secondary-text-color); }
         .bar button { font: inherit; cursor: pointer; padding: 8px 18px; border: none; border-radius: 8px;
