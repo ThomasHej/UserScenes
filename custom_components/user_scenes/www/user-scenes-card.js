@@ -1,7 +1,7 @@
 /* User Scenes card
  * - Tile grid of scenes (configurable columns / square tiles), auto-filled from saved scenes.
  * - Tap = activate scene, long-press = menu (not while editing the dashboard):
- *   Edit Scene / Reorder Scenes (rumble mode, drag tiles) / Create new Scene.
+ *   Activate and Edit Scene / Reorder Scenes (rumble mode, drag tiles) / Create new Scene / Delete Scene.
  */
 const US_DOMAIN = "user_scenes";
 const LONG_PRESS_MS = 500;
@@ -39,6 +39,19 @@ const uniform = (hass, ids) => {
   return true;
 };
 
+// Does the live state of an entity match a saved summary (on/off, brightness, colour; expanded groups per lamp)?
+const matchEntity = (hass, eid, v) => {
+  if (v.members) return Object.entries(v.members).every(([m, mv]) => matchEntity(hass, m, mv));
+  const st = hass.states[eid];
+  if (!st || st.state !== v.state) return false;
+  if (v.state !== "on") return true;
+  const b = st.attributes.brightness;
+  if (v.brightness != null && b != null && Math.abs(Math.round((b / 255) * 100) - v.brightness) > 3) return false;
+  const c = st.attributes.rgb_color;
+  if (v.rgb && c && Math.hypot(c[0] - v.rgb[0], c[1] - v.rgb[1], c[2] - v.rgb[2]) > 30) return false;
+  return true;
+};
+
 const friendly = (hass, eid) => hass.states[eid]?.attributes.friendly_name || eid;
 
 async function usCall(hass, service, data, response = false) {
@@ -63,7 +76,6 @@ class UserScenesEditor extends HTMLElement {
     this._name = scene?.name || "";
     this._saved = scene?.states || {};
     this._selected = new Set(scene?.entities || []);
-    this._recapture = false;
     this._editName = !scene;
     const orphans = (scene?.entities || []).filter((e) => !allowed.includes(e));
     this._rows = [...allowed, ...orphans].sort(
@@ -118,6 +130,8 @@ class UserScenesEditor extends HTMLElement {
         .pill { display: inline-flex; align-items: center; gap: 6px; font-size: .78em; padding: 3px 9px; border-radius: 12px;
                 background: var(--secondary-background-color); color: var(--primary-text-color); }
         .pill .dot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--divider-color); flex: none; }
+        .st.saved { color: var(--secondary-text-color); }
+        .st.changed { color: var(--warning-color, #ff9800); font-weight: 500; }
         .row.off .nm div:first-child { color: var(--secondary-text-color); }
         .row.off ha-icon { opacity: .45; }
         #foot { padding: 12px 16px; border-top: 1px solid var(--divider-color); display: flex; flex-wrap: wrap; gap: 8px; }
@@ -134,12 +148,11 @@ class UserScenesEditor extends HTMLElement {
         <div id="head"></div>
         <div id="info">
           <p>Select the lights/lamps you want to include in this scene.</p>
-          <p>Set the lamps the way you want them first (in Home Assistant or the native apps).
-             The icons show the state that will be saved when you press <b>Save</b>.</p>
-          <p>Use <b>Re-capture</b> to update all included lamps to their current state.
-             Lamps that are not selected are never touched.</p>
-          <p>Long-press a lamp icon or name to open that lamp's advanced dialog (colour, brightness, ...)
-             so you can adjust it while building the scene.</p>
+          <p>The scene was activated when you opened this dialog. Adjust the lamps here, in Home Assistant or in the native apps:
+             the icons show their live state, and exactly what you see is saved when you press <b>Save</b>.</p>
+          <p><b>Saved</b> = unchanged since the scene was saved. <b>Changed</b> = differs from the saved scene
+             (a lamp was changed, added or removed). Lamps that are not selected are never touched.</p>
+          <p>Long-press a lamp icon or name to open that lamp's advanced dialog.</p>
         </div>
         <div id="list"></div>
         <div id="foot"></div>
@@ -202,12 +215,23 @@ class UserScenesEditor extends HTMLElement {
     this.remove();
   }
 
-  // What will be stored for a lamp if Save is pressed now (null = not included)
+  // What will be stored for a lamp if Save is pressed now (null = not included).
+  // The editor auto-captures: everything shown is the live state.
   _effective(eid) {
-    if (!this._selected.has(eid)) return null;
-    if (this._saved[eid] && !this._recapture && this._modes[eid] === this._savedModes[eid])
-      return { ...this._saved[eid], from: "saved" };
-    return { ...this._current(eid), from: "current" };
+    return this._selected.has(eid) ? { ...this._current(eid) } : null;
+  }
+
+  // saved = identical to the stored scene, changed = differs, none = never part of the scene
+  _status(eid) {
+    const sv = this._saved[eid];
+    if (!this._selected.has(eid)) return sv ? "changed" : "none";
+    if (!this._id) return "new";
+    if (!sv) return "changed";
+    if (this._modes[eid] !== this._savedModes[eid]) return "changed";
+    let same = matchEntity(this._hass, eid, sv);
+    const members = this._groups[eid] || [];
+    if (same && !sv.members && members.length >= 2 && this._modes[eid] !== "group" && !uniform(this._hass, members)) same = false;
+    return same ? "saved" : "changed";
   }
 
   _current(eid) {
@@ -231,7 +255,7 @@ class UserScenesEditor extends HTMLElement {
       const icon = row.querySelector("ha-icon");
       icon.setAttribute("icon", lampIcon(this._hass, eid, on));
       icon.classList.toggle("on", on && !!eff);
-      // Realistic colour (like the Hue app): actual colour + brightness of what will be saved
+      // Realistic colour (like the Hue app): actual colour + brightness
       if (on && eff && v.rgb) {
         icon.style.color = `rgb(${v.rgb.join(",")})`;
         icon.style.opacity = String(0.5 + (0.5 * (v.brightness ?? 100)) / 100);
@@ -240,11 +264,8 @@ class UserScenesEditor extends HTMLElement {
         icon.style.opacity = "";
       }
       row.classList.toggle("off", !eff);
-      let sub = "Not included";
-      if (eff) {
-        sub = v.state === "unavailable" ? "Unavailable – will be skipped" : on ? "On" + (v.brightness != null ? ` · ${v.brightness}%` : "") : "Off";
-        if (v.state !== "unavailable") sub += eff.from === "saved" ? " — saved state" : " — current state";
-      }
+      let desc = "Not included";
+      if (eff) desc = v.state === "unavailable" ? "Unavailable – will be skipped" : on ? "On" + (v.brightness != null ? ` · ${v.brightness}%` : "") : "Off";
       const members = this._groups[eid] || [];
       const chip = row.querySelector(".chip");
       const mem = row.querySelector(".mem");
@@ -254,24 +275,18 @@ class UserScenesEditor extends HTMLElement {
         chip.title = "Auto: saved as the group if all lamps are identical, otherwise each lamp individually. Individual: always per lamp. As group: always the group.";
         chip.style.display = eff ? "" : "none";
         if (eff && v.state !== "unavailable") {
-          indiv =
-            eff.from === "saved"
-              ? !!eff.members
-              : this._modes[eid] === "individual" || (this._modes[eid] === "auto" && !uniform(this._hass, members));
-          sub += indiv ? ` · ${members.length} lamps individually` : " · as group";
+          indiv = this._modes[eid] === "individual" || (this._modes[eid] === "auto" && !uniform(this._hass, members));
+          desc += indiv ? ` · ${members.length} lamps individually` : " · as group";
         }
       }
       if (mem) {
         if (eff && indiv) {
-          const list =
-            eff.from === "saved" && eff.members
-              ? Object.entries(eff.members).map(([id, mv]) => ({ id, ...mv }))
-              : members.map((id) => ({ id, ...this._current(id) }));
-          mem.innerHTML = list
+          mem.innerHTML = members
+            .map((id) => ({ id, ...this._current(id) }))
             .map((x) => {
-              const on = x.state === "on";
-              const col = on ? (x.rgb ? `rgb(${x.rgb.join(",")})` : "var(--state-light-active-color, #ffc107)") : "var(--disabled-text-color)";
-              const txt = on ? (x.brightness != null ? ` ${x.brightness}%` : "") : x.state === "off" ? " off" : " n/a";
+              const mon = x.state === "on";
+              const col = mon ? (x.rgb ? `rgb(${x.rgb.join(",")})` : "var(--state-light-active-color, #ffc107)") : "var(--disabled-text-color)";
+              const txt = mon ? (x.brightness != null ? ` ${x.brightness}%` : "") : x.state === "off" ? " off" : " n/a";
               return `<span class="pill"><span class="dot" style="background:${col}"></span>${esc(friendly(this._hass, x.id))}${txt}</span>`;
             })
             .join("");
@@ -281,7 +296,9 @@ class UserScenesEditor extends HTMLElement {
           mem.style.display = "none";
         }
       }
-      row.querySelector(".sub").textContent = sub;
+      const st = this._status(eid);
+      const label = { saved: "Saved", changed: "Changed" }[st];
+      row.querySelector(".sub").innerHTML = esc(desc) + (label ? ` · <span class="st ${st}">${label}</span>` : "");
       const sw = row.querySelector("ha-switch");
       if (sw.checked !== !!eff) sw.checked = !!eff;
     }
@@ -310,11 +327,9 @@ class UserScenesEditor extends HTMLElement {
          <button class="b" data-action="close">Cancel</button>`
       : `
       <button class="b primary" data-action="save">Save changes</button>
-      <button class="b ${this._recapture ? "on" : ""}" data-action="recapture"><ha-icon icon="mdi:camera-retake"></ha-icon>Re-capture</button>
       <button class="b" data-action="copy"><ha-icon icon="mdi:content-copy"></ha-icon>New Duplicate</button>
       ${this._many ? `<button class="b danger" data-action="delete"><ha-icon icon="mdi:delete"></ha-icon>Delete</button>` : ""}
-      <button class="b" data-action="close">Cancel</button>
-      ${this._recapture ? `<div class="hint">All selected lamps will be saved with their current state.</div>` : ""}`;
+      <button class="b" data-action="close">Cancel</button>`;
   }
 
   _nameDone() {
@@ -353,11 +368,6 @@ class UserScenesEditor extends HTMLElement {
           this._refreshRows();
           break;
         }
-        case "recapture":
-          this._recapture = !this._recapture;
-          this._renderFoot();
-          this._refreshRows();
-          break;
         case "save": {
           const name = this._name.trim();
           const entities = this._rows.filter((x) => this._selected.has(x));
@@ -369,7 +379,7 @@ class UserScenesEditor extends HTMLElement {
           if (!entities.length) return alert("Select at least one lamp.");
           const group_modes = {};
           for (const x of entities) if ((this._groups[x] || []).length >= 2) group_modes[x] = this._modes[x];
-          if (this._id) await usCall(this._hass, "update", { scene_id: this._id, name, entities, recapture: this._recapture, group_modes });
+          if (this._id) await usCall(this._hass, "update", { scene_id: this._id, name, entities, recapture: true, group_modes });
           else await usCall(this._hass, "save", { name, entities, group_modes });
           await this._card._load();
           this.close();
@@ -399,6 +409,7 @@ class UserScenesEditor extends HTMLElement {
 
 class UserScenesMenu extends HTMLElement {
   open({ card, id, name }) {
+    const many = (card._data?.scenes.length || 0) > 1;
     const root = this.attachShadow({ mode: "open" });
     root.innerHTML = `
       <style>
@@ -414,21 +425,24 @@ class UserScenesMenu extends HTMLElement {
                  background: none; border: none; color: inherit; cursor: pointer; }
         button:hover { background: var(--secondary-background-color); }
         ha-icon { color: var(--secondary-text-color); }
+        button.danger, button.danger ha-icon { color: var(--error-color); }
       </style>
       <div class="backdrop" data-a="close"></div>
       <div class="dlg">
         <h3>${esc(name)}</h3>
-        <button data-a="edit"><ha-icon icon="mdi:pencil"></ha-icon>Edit Scene</button>
+        <button data-a="edit"><ha-icon icon="mdi:pencil"></ha-icon>Activate and Edit Scene</button>
         <button data-a="reorder"><ha-icon icon="mdi:swap-horizontal"></ha-icon>Reorder Scenes</button>
         <button data-a="new"><ha-icon icon="mdi:plus"></ha-icon>Create new Scene</button>
+        ${many ? `<button class="danger" data-a="delete"><ha-icon icon="mdi:delete"></ha-icon>Delete Scene</button>` : ""}
       </div>`;
     root.addEventListener("click", (e) => {
       const a = e.composedPath().find((n) => n.dataset?.a)?.dataset.a;
       if (!a) return;
       this.close();
-      if (a === "edit") card._edit(id);
+      if (a === "edit") card._activateAndEdit(id);
       else if (a === "reorder") card._startReorder();
       else if (a === "new") card._edit(null);
+      else if (a === "delete") card._deleteScene(id);
     });
     this._key = (e) => e.key === "Escape" && this.close();
     document.addEventListener("keydown", this._key);
@@ -559,6 +573,26 @@ class UserScenesCard extends HTMLElement {
     return t;
   }
 
+  async _activateAndEdit(id) {
+    try {
+      await usCall(this._hass, "activate", { scene_id: id });
+    } catch (err) {
+      alert(err.message || String(err));
+    }
+    this._edit(id);
+  }
+
+  async _deleteScene(id) {
+    const sc = this._scene(id);
+    if (!sc || !confirm(`Delete scene "${sc.name}"?`)) return;
+    try {
+      await usCall(this._hass, "delete", { scene_id: id });
+      await this._load();
+    } catch (err) {
+      alert(err.message || String(err));
+    }
+  }
+
   _openMenu(id) {
     const scene = this._scene(id);
     if (!scene) return;
@@ -631,19 +665,7 @@ class UserScenesCard extends HTMLElement {
 
   // Does reality currently match the scene (on/off, brightness and colour of every included lamp)?
   _sceneActive(scene) {
-    const states = this._hass.states;
-    const match = (eid, v) => {
-      if (v.members) return Object.entries(v.members).every(([m, mv]) => match(m, mv));
-      const st = states[eid];
-      if (!st || st.state !== v.state) return false;
-      if (v.state !== "on") return true;
-      const b = st.attributes.brightness;
-      if (v.brightness != null && b != null && Math.abs(Math.round((b / 255) * 100) - v.brightness) > 3) return false;
-      const c = st.attributes.rgb_color;
-      if (v.rgb && c && Math.hypot(c[0] - v.rgb[0], c[1] - v.rgb[1], c[2] - v.rgb[2]) > 30) return false;
-      return true;
-    };
-    return Object.entries(scene.states).every(([eid, v]) => match(eid, v));
+    return Object.entries(scene.states).every(([eid, v]) => matchEntity(this._hass, eid, v));
   }
 
   // Brightness-weighted average colour of the lamps that are on in the scene

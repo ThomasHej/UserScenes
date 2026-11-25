@@ -34,12 +34,17 @@ It is re-evaluated on every state change.
 - The first scene ("Scene 1", all lamps in the master list) is created automatically.
 - **Tap** a tile to restore the scene.
 - **Long-press** a tile (disabled while editing the dashboard) to get a menu:
-  - **Edit Scene** - opens the editor side panel: edit the name (pencil), switch lamps in/out, see the
-    state/colour that will be saved, **Re-capture**, **New Duplicate**, **Delete**, **Save changes**.
+  - **Activate and Edit Scene** - restores the scene, then opens the editor side panel: edit the name (pencil),
+    switch lamps in/out, adjust lamps anywhere (HA, Hue app, ...). Everything you see is what **Save** stores
+    (auto-capture). Each lamp shows **Saved** (unchanged) or **Changed** (differs from the saved scene, or was added/removed).
+    Also: **New Duplicate**, **Delete**.
   - **Reorder Scenes** - rumble mode: drag scenes (and, with `fill_empty`, the empty tiles) to change position,
     press **Done** when finished.
   - **Create new Scene** - opens the editor with a blank scene (all lamps off); enter a name, switch on the
     lamps to include and save.
+  - **Delete Scene** - deletes the scene (the last remaining scene cannot be deleted).
+
+Scenes are stored in `config/.storage/user_scenes.scenes`, so they are included in normal Home Assistant backups.
 - **Groups (Hue rooms/zones, light groups):** each group row has a mode button.
   *Auto* saves the group as one if all its lamps are set identically, otherwise each lamp individually;
   *Individual* always saves per lamp; *As group* always saves the group. The row shows which will happen and, when expanded, lists each lamp with its colour/brightness.
