@@ -38,6 +38,8 @@ It is re-evaluated on every state change.
     switch lamps in/out, adjust lamps anywhere (HA, Hue app, ...). Everything you see is what **Save** stores
     (auto-capture). Each lamp shows **Saved** (unchanged) or **Changed** (differs from the saved scene, or was added/removed).
     Also: **New Duplicate**, **Delete**.
+  - **Re-Capture and Edit** - opens the editor *without* activating the scene: all controls show the current live
+    state right away, and lamps that differ from the saved scene are flagged **Changed**; **Save** stores what you see.
   - **Reorder Scenes** - rumble mode: drag scenes (and, with `fill_empty`, the empty tiles) to change position,
     press **Done** when finished.
   - **Create new Scene** - opens the editor with a blank scene (all lamps off); enter a name, switch on the

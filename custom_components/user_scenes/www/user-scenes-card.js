@@ -1,7 +1,7 @@
 /* User Scenes card
  * - Tile grid of scenes (configurable columns / square tiles), auto-filled from saved scenes.
  * - Tap = activate scene, long-press = menu (not while editing the dashboard):
- *   Activate and Edit Scene / Reorder Scenes (rumble mode, drag tiles) / Create new Scene / Delete Scene.
+ *   Activate and Edit Scene / Re-Capture and Edit / Reorder Scenes (rumble mode, drag tiles) / Create new Scene / Delete Scene.
  */
 const US_DOMAIN = "user_scenes";
 const LONG_PRESS_MS = 500;
@@ -431,6 +431,7 @@ class UserScenesMenu extends HTMLElement {
       <div class="dlg">
         <h3>${esc(name)}</h3>
         <button data-a="edit"><ha-icon icon="mdi:pencil"></ha-icon>Activate and Edit Scene</button>
+        <button data-a="recapture"><ha-icon icon="mdi:camera-retake"></ha-icon>Re-Capture and Edit</button>
         <button data-a="reorder"><ha-icon icon="mdi:swap-horizontal"></ha-icon>Reorder Scenes</button>
         <button data-a="new"><ha-icon icon="mdi:plus"></ha-icon>Create new Scene</button>
         ${many ? `<button class="danger" data-a="delete"><ha-icon icon="mdi:delete"></ha-icon>Delete Scene</button>` : ""}
@@ -440,6 +441,7 @@ class UserScenesMenu extends HTMLElement {
       if (!a) return;
       this.close();
       if (a === "edit") card._activateAndEdit(id);
+      else if (a === "recapture") card._edit(id); // no activation: the editor shows the live state
       else if (a === "reorder") card._startReorder();
       else if (a === "new") card._edit(null);
       else if (a === "delete") card._deleteScene(id);
